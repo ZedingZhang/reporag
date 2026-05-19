@@ -5,7 +5,6 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 
-
 _engine = None
 _SyncSession = None
 

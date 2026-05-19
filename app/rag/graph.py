@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
-from app.core.providers import ChatProvider
+from langgraph.graph import END, StateGraph
+
 from app.rag.citations import Citation, extract_citations_from_answer, validate_citations
 from app.rag.prompts import (
     ANSWER_PROMPT,
-    QUESTION_CLASSIFIER_PROMPT,
     QUERY_REWRITE_PROMPT,
+    QUESTION_CLASSIFIER_PROMPT,
     SYSTEM_PROMPT,
 )
-from app.retrieval.hybrid import HybridRetriever
-from app.retrieval.rerank import IdentityReranker, Reranker
 from app.retrieval.vector import ScoredChunk
 
 logger = logging.getLogger(__name__)
@@ -34,34 +32,45 @@ class RAGState:
     confidence: str = "low"
 
 
-class RAGPipeline:
-    def __init__(
-        self,
-        chat_provider: ChatProvider,
-        retriever: HybridRetriever,
-        reranker: Reranker | None = None,
-    ) -> None:
-        self._chat = chat_provider
-        self._retriever = retriever
-        self._reranker = reranker or IdentityReranker()
+def _make_evidence(chunks: list[ScoredChunk]) -> str:
+    parts: list[str] = []
+    for i, chunk in enumerate(chunks):
+        url_line = f"URL: {chunk.github_url}" if chunk.github_url else "URL: (no permalink)"
+        location = ""
+        if chunk.path:
+            location = f" [{chunk.path}"
+            if chunk.line_start:
+                location += f":L{chunk.line_start}"
+                if chunk.line_end and chunk.line_end != chunk.line_start:
+                    location += f"-L{chunk.line_end}"
+            location += "]"
+        parts.append(
+            f"[Source {i + 1}]{location}\n{url_line}\n{chunk.content[:2000]}"
+        )
+    return "\n\n---\n\n".join(parts)
 
-    def run(self, repo_id: str, question: str, top_k: int = 8) -> RAGState:
-        state = RAGState(repo_id=repo_id, question=question, top_k=top_k)
 
-        state = self._normalize_question(state)
-        state = self._query_rewrite(state)
-        state = self._hybrid_retrieve(state)
-        state = self._rerank(state)
-        state = self._evidence_check(state)
-        state = self._generate_answer(state)
-        state = self._validate_citations(state)
+def _get_chunk_type_weights(question_type: str) -> dict[str, float] | None:
+    weights_map: dict[str, dict[str, float]] = {
+        "architecture": {"code_symbol": 1.5, "markdown_section": 1.0},
+        "code_location": {"code_symbol": 2.0, "markdown_section": 0.5},
+        "issue_context": {"issue_comment": 2.0, "pr_description": 2.0},
+        "usage": {"markdown_section": 2.0, "code_symbol": 0.5},
+        "debugging": {"issue_comment": 1.5, "code_symbol": 1.0, "pr_description": 1.5},
+    }
+    return weights_map.get(question_type)
 
-        return state
 
-    def _normalize_question(self, state: RAGState) -> RAGState:
+class _NodeContext:
+    def __init__(self, chat_provider, retriever, reranker):
+        self.chat = chat_provider
+        self.retriever = retriever
+        self.reranker = reranker
+
+    def normalize_question(self, state: RAGState) -> RAGState:
         prompt = QUESTION_CLASSIFIER_PROMPT.format(question=state.question)
         try:
-            result = self._chat.chat([
+            result = self.chat.chat([
                 {"role": "system", "content": "You classify questions precisely."},
                 {"role": "user", "content": prompt},
             ])
@@ -71,18 +80,17 @@ class RAGPipeline:
             state.question_type = "code_location"
         return state
 
-    def _query_rewrite(self, state: RAGState) -> RAGState:
+    def query_rewrite(self, state: RAGState) -> RAGState:
         prompt = QUERY_REWRITE_PROMPT.format(
-            question=state.question,
-            question_type=state.question_type,
+            question=state.question, question_type=state.question_type,
         )
         try:
-            result = self._chat.chat([
+            result = self.chat.chat([
                 {"role": "system", "content": "You generate search queries for code retrieval."},
                 {"role": "user", "content": prompt},
             ])
             queries = [
-                q.strip().lstrip("-_*•0123456789. )")
+                q.strip().lstrip("-_*0123456789. )")
                 for q in result.strip().split("\n")
                 if q.strip()
             ]
@@ -92,71 +100,57 @@ class RAGPipeline:
             state.rewritten_queries = [state.question]
         return state
 
-    def _hybrid_retrieve(self, state: RAGState) -> RAGState:
-        chunk_type_weights = _get_chunk_type_weights(state.question_type)
+    def hybrid_retrieve(self, state: RAGState) -> RAGState:
+        weights = _get_chunk_type_weights(state.question_type)
         all_chunks: dict[str, ScoredChunk] = {}
-
         for query in state.rewritten_queries[:2]:
-            chunks = self._retriever.retrieve(
-                query=query,
-                repo_id=state.repo_id,
-                top_k=state.top_k * 2,
-                chunk_type_weights=chunk_type_weights,
+            chunks = self.retriever.retrieve(
+                query=query, repo_id=state.repo_id,
+                top_k=state.top_k * 2, chunk_type_weights=weights,
             )
             for c in chunks:
                 if c.chunk_id not in all_chunks:
                     all_chunks[c.chunk_id] = c
                 else:
-                    all_chunks[c.chunk_id].score = max(all_chunks[c.chunk_id].score, c.score)
-
+                    all_chunks[c.chunk_id].score = max(
+                        all_chunks[c.chunk_id].score, c.score,
+                    )
         state.retrieved_chunks = sorted(
-            all_chunks.values(), key=lambda x: x.score, reverse=True
+            all_chunks.values(), key=lambda x: x.score, reverse=True,
         )[:state.top_k * 2]
         return state
 
-    def _rerank(self, state: RAGState) -> RAGState:
-        state.reranked_chunks = self._reranker.rerank(
-            state.question, state.retrieved_chunks, top_k=state.top_k
+    def rerank(self, state: RAGState) -> RAGState:
+        state.reranked_chunks = self.reranker.rerank(
+            state.question, state.retrieved_chunks, top_k=state.top_k,
         )
         return state
 
-    def _evidence_check(self, state: RAGState) -> RAGState:
+    def evidence_check(self, state: RAGState) -> RAGState:
         if not state.reranked_chunks:
             state.evidence_sufficient = False
         else:
-            max_score = max(c.score for c in state.reranked_chunks) if state.reranked_chunks else 0
-            state.evidence_sufficient = max_score > 0.01 or len(state.reranked_chunks) >= 1
+            max_score = max(c.score for c in state.reranked_chunks)
+            state.evidence_sufficient = max_score > 0.01
         return state
 
-    def _generate_answer(self, state: RAGState) -> RAGState:
+    def generate_answer(self, state: RAGState) -> RAGState:
         if not state.evidence_sufficient or not state.reranked_chunks:
-            state.answer = "I don't have enough information in the indexed repository content to answer this question."
+            state.answer = (
+                "I don't have enough information in the indexed repository "
+                "content to answer this question."
+            )
             state.confidence = "low"
             return state
 
-        evidence_parts: list[str] = []
-        for i, chunk in enumerate(state.reranked_chunks):
-            location = ""
-            if chunk.path:
-                location = f" [{chunk.path}"
-                if chunk.line_start:
-                    location += f":L{chunk.line_start}"
-                    if chunk.line_end and chunk.line_end != chunk.line_start:
-                        location += f"-L{chunk.line_end}"
-                location += "]"
-            evidence_parts.append(
-                f"[Source {i + 1}]{location}\n{chunk.content[:2000]}"
-            )
-        evidence = "\n\n---\n\n".join(evidence_parts)
-
+        evidence = _make_evidence(state.reranked_chunks)
         prompt = ANSWER_PROMPT.format(
             system_prompt=SYSTEM_PROMPT,
             evidence=evidence,
             question=state.question,
         )
-
         try:
-            answer = self._chat.chat([
+            answer = self.chat.chat([
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ])
@@ -166,24 +160,37 @@ class RAGPipeline:
             logger.exception("Answer generation failed")
             state.answer = "Failed to generate answer due to an internal error."
             state.confidence = "low"
-
         return state
 
-    def _validate_citations(self, state: RAGState) -> RAGState:
+    def validate_citations(self, state: RAGState) -> RAGState:
         if not state.answer or not state.reranked_chunks:
             return state
 
-        evidence_urls = {
-            c.github_url or c.chunk_id for c in state.reranked_chunks
-        }
-
+        evidence_urls = {c.github_url or c.chunk_id for c in state.reranked_chunks}
         state.citations = extract_citations_from_answer(state.answer, evidence_urls)
+        is_valid, invalid_urls = validate_citations(state.answer, evidence_urls)
 
-        is_valid, invalid = validate_citations(state.answer, evidence_urls)
-        if not is_valid and invalid:
-            logger.warning("Found %d citations not in evidence: %s", len(invalid), invalid)
+        if invalid_urls:
+            logger.warning(
+                "Found %d citations not in evidence: %s", len(invalid_urls), invalid_urls,
+            )
+            stripped = state.answer
+            for url in invalid_urls:
+                stripped = stripped.replace(url, "")
+            state.answer = stripped.strip()
+            if not state.answer:
+                state.answer = (
+                    "I was unable to provide an answer with verifiable citations "
+                    "from the indexed content."
+                )
+            state.citations = extract_citations_from_answer(state.answer, evidence_urls)
+            state.confidence = "low"
 
         if not state.citations:
+            state.citations = _build_fallback_citations(state.reranked_chunks)
+            state.answer = _append_citations_to_answer(
+                state.answer, state.reranked_chunks,
+            )
             state.confidence = "low"
         elif is_valid and len(state.citations) >= 1:
             state.confidence = "high"
@@ -201,12 +208,68 @@ class RAGPipeline:
         return state
 
 
-def _get_chunk_type_weights(question_type: str) -> dict[str, float] | None:
-    weights_map = {
-        "architecture": {"code_symbol": 1.5, "markdown_section": 1.0},
-        "code_location": {"code_symbol": 2.0, "markdown_section": 0.5},
-        "issue_context": {"issue_comment": 2.0, "pr_description": 2.0},
-        "usage": {"markdown_section": 2.0, "code_symbol": 0.5},
-        "debugging": {"issue_comment": 1.5, "code_symbol": 1.0, "pr_description": 1.5},
-    }
-    return weights_map.get(question_type)
+def _build_fallback_citations(chunks: list[ScoredChunk]) -> list[Citation]:
+    citations: list[Citation] = []
+    seen_urls: set[str] = set()
+    for c in chunks:
+        url = c.github_url or ""
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            citations.append(Citation(
+                title=c.path or c.chunk_id,
+                url=url,
+                path=c.path,
+                line_start=c.line_start,
+                line_end=c.line_end,
+            ))
+    return citations
+
+
+def _append_citations_to_answer(answer: str, chunks: list[ScoredChunk]) -> str:
+    if not chunks:
+        return answer
+    lines = [answer.rstrip(), "", "Relevant sources from the repository:"]
+    for i, c in enumerate(chunks[:5]):
+        label = c.path or c.chunk_id
+        url = c.github_url or ""
+        if url:
+            lines.append(f"- [{label}]({url})")
+        else:
+            lines.append(f"- {label}")
+    return "\n".join(lines)
+
+
+def _decide_after_evidence(state: RAGState) -> str:
+    if state.evidence_sufficient:
+        return "generate_answer"
+    return "refuse"
+
+
+def build_rag_graph(chat_provider, retriever, reranker=None):
+    from app.retrieval.rerank import IdentityReranker
+    ctx = _NodeContext(chat_provider, retriever, reranker or IdentityReranker())
+
+    workflow = StateGraph(RAGState)
+
+    workflow.add_node("normalize_question", ctx.normalize_question)
+    workflow.add_node("query_rewrite", ctx.query_rewrite)
+    workflow.add_node("hybrid_retrieve", ctx.hybrid_retrieve)
+    workflow.add_node("rerank", ctx.rerank)
+    workflow.add_node("evidence_check", ctx.evidence_check)
+    workflow.add_node("generate_answer", ctx.generate_answer)
+    workflow.add_node("validate_citations", ctx.validate_citations)
+
+    workflow.set_entry_point("normalize_question")
+    workflow.add_edge("normalize_question", "query_rewrite")
+    workflow.add_edge("query_rewrite", "hybrid_retrieve")
+    workflow.add_edge("hybrid_retrieve", "rerank")
+    workflow.add_edge("rerank", "evidence_check")
+    workflow.add_conditional_edges(
+        "evidence_check",
+        _decide_after_evidence,
+        {"generate_answer": "generate_answer", "refuse": END},
+    )
+    workflow.add_edge("generate_answer", "validate_citations")
+    workflow.add_edge("validate_citations", END)
+
+    return workflow.compile()

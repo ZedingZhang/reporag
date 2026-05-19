@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from app.rag.citations import (
-    Citation,
     build_github_permalink,
     build_issue_url,
     build_pr_url,
@@ -13,41 +12,31 @@ from app.rag.citations import (
 class TestBuildPermalink:
     def test_basic_permalink(self) -> None:
         url = build_github_permalink(
-            owner="pallets",
-            repo="click",
-            commit_sha="abc123def456",
-            path="src/click/core.py",
+            owner="pallets", repo="click",
+            commit_sha="abc123def456", path="src/click/core.py",
         )
-        assert url == "https://github.com/pallets/click/blob/abc123def456/src/click/core.py"
+        assert url == (
+            "https://github.com/pallets/click/blob/abc123def456/src/click/core.py"
+        )
 
     def test_permalink_with_line_range(self) -> None:
         url = build_github_permalink(
-            owner="pallets",
-            repo="click",
-            commit_sha="abc123",
-            path="src/core.py",
-            line_start=10,
-            line_end=42,
+            owner="pallets", repo="click", commit_sha="abc123",
+            path="src/core.py", line_start=10, line_end=42,
         )
         assert url.endswith("#L10-L42")
 
     def test_permalink_single_line(self) -> None:
         url = build_github_permalink(
-            owner="pallets",
-            repo="click",
-            commit_sha="abc123",
-            path="src/core.py",
-            line_start=5,
-            line_end=5,
+            owner="pallets", repo="click", commit_sha="abc123",
+            path="src/core.py", line_start=5, line_end=5,
         )
         assert url.endswith("#L5")
 
     def test_permalink_uses_commit_not_branch(self) -> None:
         url = build_github_permalink(
-            owner="pallets",
-            repo="click",
-            commit_sha="abc123def456",
-            path="docs/index.md",
+            owner="pallets", repo="click",
+            commit_sha="abc123def456", path="docs/index.md",
         )
         assert "/blob/abc123def456/" in url
         assert "/blob/main/" not in url
@@ -83,7 +72,9 @@ class TestExtractCitations:
         assert len(citations) == 1
 
     def test_empty_answer(self) -> None:
-        citations = extract_citations_from_answer("No specific file referenced.", set())
+        citations = extract_citations_from_answer(
+            "No specific file referenced.", set(),
+        )
         assert len(citations) == 0
 
 
@@ -118,7 +109,9 @@ class TestValidateCitations:
         evidence = {
             "https://github.com/pallets/click/blob/abc/src/core.py",
         }
-        answer = "See https://github.com/pallets/click/blob/abc/src/core.py#L10-L42"
+        answer = (
+            "See https://github.com/pallets/click/blob/abc/src/core.py#L10-L42"
+        )
         is_valid, invalid = validate_citations(answer, evidence)
         assert is_valid
         assert len(invalid) == 0
