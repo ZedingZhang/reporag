@@ -15,7 +15,7 @@ from app.api.schemas import (
     RepoListResponse,
     RetrievedChunk,
 )
-from app.db.models import Document, Repository
+from app.db.models import Repository
 from app.db.session import get_sync_session
 
 logger = logging.getLogger(__name__)
@@ -23,11 +23,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _run_ingestion(repo_id: str, repo_url: str) -> None:
+def _run_ingestion(
+    repo_id: str,
+    repo_url: str,
+    include_issues: bool = True,
+    include_pull_requests: bool = True,
+    max_issues: int = 30,
+    max_pull_requests: int = 30,
+) -> None:
+    from app.db.models import Chunk, Document
     from app.github.client import GitHubClient, parse_repo_url
     from app.ingestion.chunkers import chunk_code_file, chunk_markdown, chunk_text_blocks
     from app.ingestion.embeddings import EmbeddingClient
-    from app.db.models import Chunk, Document, Repository, _uuid_str
 
     session = get_sync_session()
     try:
@@ -47,34 +54,31 @@ def _run_ingestion(repo_id: str, repo_url: str) -> None:
         session.commit()
 
         files, readme = client.fetch_files(owner, name, repo_info.latest_commit)
-        issues = client.fetch_issues(owner, name)
-        pull_requests = client.fetch_pull_requests(owner, name)
+
+        issues = []
+        if include_issues:
+            issues = client.fetch_issues(owner, name, max_count=max_issues)
+
+        pull_requests = []
+        if include_pull_requests:
+            pull_requests = client.fetch_pull_requests(
+                owner, name, max_count=max_pull_requests,
+            )
 
         def _hash(text: str) -> str:
             import hashlib
             return hashlib.sha256(text.encode()).hexdigest()
 
-        def _add_chunks_from_file(fetched_file, doc, chunker_fn):
-            results = chunker_fn(
-                fetched_file.content if callable(chunker_fn) and chunker_fn.__name__ != 'chunk_markdown'
-                else fetched_file.content,
-                fetched_file.path,
-                fetched_file.commit_sha,
-                fetched_file.url,
-            )
+        def _add_chunks_from_chunking_results(
+            doc_id: str, results: list, repo_id_str: str,
+        ) -> None:
             for r in results:
                 session.add(Chunk(
-                    document_id=doc.id,
-                    repo_id=repo_id,
-                    chunk_type=r.chunk_type,
-                    content=r.content,
-                    summary=r.summary,
-                    path=r.path,
-                    symbol_name=r.symbol_name,
-                    line_start=r.line_start,
-                    line_end=r.line_end,
-                    github_url=r.github_url,
-                    metadata_json=r.metadata,
+                    document_id=doc_id, repo_id=repo_id_str,
+                    chunk_type=r.chunk_type, content=r.content,
+                    summary=r.summary, path=r.path, symbol_name=r.symbol_name,
+                    line_start=r.line_start, line_end=r.line_end,
+                    github_url=r.github_url, metadata_json=r.metadata,
                 ))
 
         # README
@@ -87,14 +91,14 @@ def _run_ingestion(repo_id: str, repo_url: str) -> None:
             )
             session.add(doc)
             session.flush()
-            for r in chunk_markdown(readme.content, readme.path, readme.commit_sha, readme.url):
-                session.add(Chunk(
-                    document_id=doc.id, repo_id=repo_id,
-                    chunk_type=r.chunk_type, content=r.content,
-                    summary=r.summary, path=r.path, symbol_name=r.symbol_name,
-                    line_start=r.line_start, line_end=r.line_end,
-                    github_url=r.github_url, metadata_json=r.metadata,
-                ))
+            _add_chunks_from_chunking_results(
+                doc.id,
+                chunk_markdown(
+                    readme.content, readme.path,
+                    readme.commit_sha, readme.url,
+                ),
+                repo_id,
+            )
 
         # Files
         for f in files:
@@ -105,14 +109,11 @@ def _run_ingestion(repo_id: str, repo_url: str) -> None:
             )
             session.add(doc)
             session.flush()
-            for r in chunk_code_file(f.content, f.path, f.commit_sha, f.url):
-                session.add(Chunk(
-                    document_id=doc.id, repo_id=repo_id,
-                    chunk_type=r.chunk_type, content=r.content,
-                    summary=r.summary, path=r.path, symbol_name=r.symbol_name,
-                    line_start=r.line_start, line_end=r.line_end,
-                    github_url=r.github_url, metadata_json=r.metadata,
-                ))
+            _add_chunks_from_chunking_results(
+                doc.id,
+                chunk_code_file(f.content, f.path, f.commit_sha, f.url),
+                repo_id,
+            )
 
         session.flush()
 
@@ -127,13 +128,11 @@ def _run_ingestion(repo_id: str, repo_url: str) -> None:
             session.add(doc)
             session.flush()
             text = f"#{issue.number}: {issue.title}\n\n{issue.body}"
-            for r in chunk_text_blocks(text, None, issue.url, "issue_comment"):
-                session.add(Chunk(
-                    document_id=doc.id, repo_id=repo_id,
-                    chunk_type=r.chunk_type, content=r.content,
-                    summary=r.summary, github_url=r.github_url,
-                    metadata_json=r.metadata,
-                ))
+            _add_chunks_from_chunking_results(
+                doc.id,
+                chunk_text_blocks(text, None, issue.url, "issue_comment"),
+                repo_id,
+            )
 
         # PRs
         for pr in pull_requests:
@@ -146,18 +145,16 @@ def _run_ingestion(repo_id: str, repo_url: str) -> None:
             session.add(doc)
             session.flush()
             text = f"#{pr.number}: {pr.title}\n\n{pr.body}"
-            for r in chunk_text_blocks(text, None, pr.url, "pr_description"):
-                session.add(Chunk(
-                    document_id=doc.id, repo_id=repo_id,
-                    chunk_type=r.chunk_type, content=r.content,
-                    summary=r.summary, github_url=r.github_url,
-                    metadata_json=r.metadata,
-                ))
+            _add_chunks_from_chunking_results(
+                doc.id,
+                chunk_text_blocks(text, None, pr.url, "pr_description"),
+                repo_id,
+            )
 
-        # Embed all chunks
+        # Embed
         embedding_client = EmbeddingClient()
         all_chunks = session.query(Chunk).filter(
-            Chunk.repo_id == repo_id, Chunk.embedding.is_(None)
+            Chunk.repo_id == repo_id, Chunk.embedding.is_(None),
         ).all()
         if all_chunks:
             texts = [c.content for c in all_chunks]
@@ -187,9 +184,9 @@ def _run_ingestion(repo_id: str, repo_url: str) -> None:
 
 @router.post("/repos/index", response_model=IndexRepoResponse)
 async def index_repo(
-    request: IndexRepoRequest, background_tasks: BackgroundTasks
+    request: IndexRepoRequest, background_tasks: BackgroundTasks,
 ) -> IndexRepoResponse:
-    from app.github.client import parse_repo_url
+    from app.github.client import GitHubClient, parse_repo_url
 
     try:
         owner, name = parse_repo_url(request.repo_url)
@@ -205,19 +202,15 @@ async def index_repo(
         )
         if existing and existing.status == "completed":
             return IndexRepoResponse(
-                repo_id=existing.id,
-                status=existing.status,
+                repo_id=existing.id, status=existing.status,
                 message="Repository already indexed.",
             )
-
         if existing and existing.status == "indexing":
             return IndexRepoResponse(
-                repo_id=existing.id,
-                status="indexing",
+                repo_id=existing.id, status="indexing",
                 message="Indexing already in progress.",
             )
 
-        from app.github.client import GitHubClient
         client = GitHubClient()
         repo_info = client.fetch_repo_info(owner, name)
 
@@ -228,9 +221,7 @@ async def index_repo(
             repo_id = existing.id
         else:
             repo = Repository(
-                owner=owner,
-                name=name,
-                url=repo_info.url,
+                owner=owner, name=name, url=repo_info.url,
                 default_branch=repo_info.default_branch,
                 last_indexed_commit=repo_info.latest_commit,
                 status="pending",
@@ -239,11 +230,18 @@ async def index_repo(
             session.commit()
             repo_id = repo.id
 
-        background_tasks.add_task(_run_ingestion, repo_id, request.repo_url)
+        background_tasks.add_task(
+            _run_ingestion,
+            repo_id,
+            request.repo_url,
+            request.include_issues,
+            request.include_pull_requests,
+            request.max_issues,
+            request.max_pull_requests,
+        )
 
         return IndexRepoResponse(
-            repo_id=repo_id,
-            status="indexing",
+            repo_id=repo_id, status="indexing",
             message="Indexing started in background.",
         )
     except Exception as e:
@@ -258,18 +256,19 @@ async def index_repo(
 async def list_repos() -> RepoListResponse:
     session = get_sync_session()
     try:
-        repos = session.query(Repository).order_by(Repository.created_at.desc()).all()
-        return RepoListResponse(
-            repos=[
-                RepoInfo(
-                    id=r.id, owner=r.owner, name=r.name, url=r.url,
-                    default_branch=r.default_branch,
-                    last_indexed_commit=r.last_indexed_commit,
-                    indexed_at=r.indexed_at, status=r.status,
-                )
-                for r in repos
-            ]
+        repos = (
+            session.query(Repository)
+            .order_by(Repository.created_at.desc()).all()
         )
+        return RepoListResponse(repos=[
+            RepoInfo(
+                id=r.id, owner=r.owner, name=r.name, url=r.url,
+                default_branch=r.default_branch,
+                last_indexed_commit=r.last_indexed_commit,
+                indexed_at=r.indexed_at, status=r.status,
+            )
+            for r in repos
+        ])
     finally:
         session.close()
 
@@ -295,7 +294,9 @@ async def get_repo_status(repo_id: str) -> RepoInfo:
 async def chat(request: ChatRequest) -> ChatResponse:
     session = get_sync_session()
     try:
-        repo = session.query(Repository).filter(Repository.id == request.repo_id).first()
+        repo = session.query(Repository).filter(
+            Repository.id == request.repo_id,
+        ).first()
         if not repo:
             raise HTTPException(status_code=404, detail="Repository not found")
         if repo.status != "completed":
@@ -306,29 +307,27 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         from app.core.providers import get_chat_provider
         from app.ingestion.embeddings import EmbeddingClient
-        from app.rag.graph import RAGPipeline
+        from app.rag.graph import build_rag_graph
         from app.retrieval.hybrid import HybridRetriever
 
         chat_provider = get_chat_provider()
         embedding_client = EmbeddingClient()
         retriever = HybridRetriever(session, embedding_client)
-        pipeline = RAGPipeline(chat_provider, retriever)
+        graph = build_rag_graph(chat_provider, retriever)
 
-        state = pipeline.run(
-            repo_id=request.repo_id,
-            question=request.question,
-            top_k=request.top_k,
-        )
+        initial_state = {
+            "repo_id": request.repo_id,
+            "question": request.question,
+            "top_k": request.top_k,
+        }
+        result = graph.invoke(initial_state)
 
         citations = [
             Citation(
-                title=c.title,
-                url=c.url,
-                path=c.path,
-                line_start=c.line_start,
-                line_end=c.line_end,
+                title=c.title, url=c.url,
+                path=c.path, line_start=c.line_start, line_end=c.line_end,
             )
-            for c in state.citations
+            for c in result["citations"]
         ]
 
         retrieved_chunks = [
@@ -339,14 +338,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 chunk_type=c.chunk_type,
                 score=round(c.score, 4),
             )
-            for c in state.reranked_chunks
+            for c in result["reranked_chunks"]
         ]
 
         return ChatResponse(
-            answer=state.answer,
+            answer=result["answer"],
             citations=citations,
             retrieved_chunks=retrieved_chunks,
-            confidence=state.confidence,
+            confidence=result["confidence"],
         )
     except HTTPException:
         raise

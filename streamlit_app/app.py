@@ -119,9 +119,14 @@ if ask and repo_id and question:
                         st.markdown(f"{i}. [{cit['title']}]({cit['url']}){loc}")
 
                 if data.get("retrieved_chunks"):
-                    with st.expander(f"Retrieved Chunks ({len(data['retrieved_chunks'])})"):
+                    n_chunks = len(data['retrieved_chunks'])
+                    with st.expander(f"Retrieved Chunks ({n_chunks})"):
                         for i, chunk in enumerate(data["retrieved_chunks"], 1):
-                            st.markdown(f"**Chunk {i}** ({chunk.get('chunk_type', '?')}, score: {chunk.get('score', 0):.4f})")
+                            ctype = chunk.get('chunk_type', '?')
+                            cscore = chunk.get('score', 0)
+                            st.markdown(
+                                f"**Chunk {i}** ({ctype}, score: {cscore:.4f})"
+                            )
                             if chunk.get("path"):
                                 st.caption(f"`{chunk['path']}`")
                             st.code(chunk.get("content", "")[:800], language="text")
