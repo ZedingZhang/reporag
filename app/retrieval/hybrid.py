@@ -54,6 +54,8 @@ def _reciprocal_rank_fusion(
         base = 1.0 / (k + rank)
         type_weight = _get_type_weight(chunk.chunk_type, weights)
         scores[chunk.chunk_id] = base * type_weight
+        chunk.vector_score = chunk.vector_score if chunk.vector_score is not None else chunk.score
+        chunk.retrieval_sources.add("vector")
         content_map[chunk.chunk_id] = chunk
 
     for rank, chunk in enumerate(ranked_b, start=1):
@@ -64,7 +66,16 @@ def _reciprocal_rank_fusion(
             scores[chunk.chunk_id] += extra
         else:
             scores[chunk.chunk_id] = extra
-        if chunk.chunk_id not in content_map:
+        if chunk.chunk_id in content_map:
+            content_map[chunk.chunk_id].keyword_score = (
+                chunk.keyword_score if chunk.keyword_score is not None else chunk.score
+            )
+            content_map[chunk.chunk_id].retrieval_sources.add("keyword")
+        else:
+            chunk.keyword_score = (
+                chunk.keyword_score if chunk.keyword_score is not None else chunk.score
+            )
+            chunk.retrieval_sources.add("keyword")
             content_map[chunk.chunk_id] = chunk
 
     result: list[ScoredChunk] = []

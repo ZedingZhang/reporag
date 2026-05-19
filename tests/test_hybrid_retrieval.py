@@ -30,6 +30,10 @@ class TestReciprocalRankFusion:
         scores = {c.chunk_id: c.score for c in fused}
         assert scores["a2"] > scores["a1"]
         assert "b1" in scores
+        fused_by_id = {c.chunk_id: c for c in fused}
+        assert fused_by_id["a2"].retrieval_sources == {"vector", "keyword"}
+        assert fused_by_id["a1"].retrieval_sources == {"vector"}
+        assert fused_by_id["b1"].retrieval_sources == {"keyword"}
 
     def test_rrf_empty_lists(self) -> None:
         fused = _reciprocal_rank_fusion([], [], k=60)

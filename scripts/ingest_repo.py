@@ -269,7 +269,7 @@ def main() -> None:
 
     client = GitHubClient()
     logger.info("Fetching repo info for %s/%s...", owner, name)
-    repo_info = client.fetch_repo_info(owner, name)
+    repo_info = client.fetch_repo_info(owner, name, branch=args.branch)
 
     issues: list[FetchedIssue] = []
     if not args.no_issues:
