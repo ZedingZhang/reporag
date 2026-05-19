@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import pytest
-
 from app.retrieval.hybrid import _reciprocal_rank_fusion
 from app.retrieval.vector import ScoredChunk
 
 
-def _make_chunk(chunk_id: str, chunk_type: str = "code_symbol", score: float = 0.0) -> ScoredChunk:
+def _make_chunk(
+    chunk_id: str, chunk_type: str = "code_symbol", score: float = 0.0,
+) -> ScoredChunk:
     return ScoredChunk(
-        chunk_id=chunk_id,
-        content=f"Content of {chunk_id}",
-        path=f"/path/{chunk_id}",
-        chunk_type=chunk_type,
-        score=score,
+        chunk_id=chunk_id, content=f"Content of {chunk_id}",
+        path=f"/path/{chunk_id}", chunk_type=chunk_type, score=score,
     )
 
 
@@ -28,9 +25,7 @@ class TestReciprocalRankFusion:
             _make_chunk("b1", score=0.85),
             _make_chunk("a3", score=0.75),
         ]
-
         fused = _reciprocal_rank_fusion(a, b, k=60)
-
         assert len(fused) == 4
         scores = {c.chunk_id: c.score for c in fused}
         assert scores["a2"] > scores["a1"]
@@ -49,10 +44,8 @@ class TestReciprocalRankFusion:
     def test_rrf_stable_ordering(self) -> None:
         a = [_make_chunk(f"a{i}") for i in range(5)]
         b = [_make_chunk(f"a{i}") for i in range(5)]
-
         fused1 = _reciprocal_rank_fusion(a, b, k=60)
         fused2 = _reciprocal_rank_fusion(a, b, k=60)
-
         ids1 = [c.chunk_id for c in fused1]
         ids2 = [c.chunk_id for c in fused2]
         assert ids1 == ids2
@@ -66,12 +59,10 @@ class TestReciprocalRankFusion:
             _make_chunk("code1", chunk_type="code_symbol"),
             _make_chunk("md1", chunk_type="markdown_section"),
         ]
-
         code_heavy = _reciprocal_rank_fusion(
             a, b, k=60,
             weights={"markdown_section": 0.5, "code_symbol": 1.5},
         )
-
         code_chunk = next(c for c in code_heavy if c.chunk_id == "code1")
         md_chunk = next(c for c in code_heavy if c.chunk_id == "md1")
         assert code_chunk.score > md_chunk.score

@@ -18,7 +18,7 @@ from app.core.providers import get_chat_provider
 from app.db.models import Repository
 from app.db.session import get_sync_session
 from app.ingestion.embeddings import EmbeddingClient
-from app.rag.graph import RAGPipeline
+from app.rag.graph import build_rag_graph
 from app.retrieval.hybrid import HybridRetriever
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ def main() -> None:
         chat_provider = get_chat_provider()
         embedding_client = EmbeddingClient()
         retriever = HybridRetriever(session, embedding_client)
-        pipeline = RAGPipeline(chat_provider, retriever)
+        graph = build_rag_graph(chat_provider, retriever)
 
         total_recall = 0.0
         total_mrr = 0.0
@@ -130,20 +130,19 @@ def main() -> None:
 
             start = time.monotonic()
 
-            state = pipeline.run(
-                repo_id=repo.id, question=question, top_k=args.recall_k
-            )
-
+            state = graph.invoke({
+                "repo_id": repo.id, "question": question,
+                "top_k": args.recall_k,
+            })
             elapsed = time.monotonic() - start
-
             retrieved_paths = [
-                c.path or "" for c in state.reranked_chunks
+                c.path or "" for c in state["reranked_chunks"]
             ]
             recall = compute_recall_at_k(
-                retrieved_paths, expected_sources, args.recall_k
+                retrieved_paths, expected_sources, args.recall_k,
             )
             mrr = compute_mrr(retrieved_paths, expected_sources)
-            citation_cov = 1.0 if state.citations else 0.0
+            citation_cov = 1.0 if state["citations"] else 0.0
 
             total_recall += recall
             total_mrr += mrr
@@ -156,9 +155,9 @@ def main() -> None:
                 "mrr": mrr,
                 "citation_coverage": citation_cov,
                 "latency_seconds": round(elapsed, 3),
-                "num_retrieved": len(state.reranked_chunks),
-                "num_citations": len(state.citations),
-                "confidence": state.confidence,
+                "num_retrieved": len(state["reranked_chunks"]),
+                "num_citations": len(state["citations"]),
+                "confidence": state["confidence"],
             })
 
         n = len(details)

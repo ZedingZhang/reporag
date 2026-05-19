@@ -87,18 +87,19 @@ def chunk_markdown(
         content = sec["content"]
         token_est = _estimate_tokens(content)
 
+        ls = sec["line_start"]
+        le = sec["line_end"] or ls
+        github_url = _build_code_url(base_url, path, ls, le) if (base_url and path) else ""
+
         if token_est <= CHUNK_TARGET_MAX * 2:
-            github_url = ""
-            if base_url and path:
-                github_url = _build_code_url(base_url, path, sec["line_start"], sec["line_end"] or sec["line_start"])
             chunks.append(
                 ChunkingResult(
                     content=content,
                     chunk_type="markdown_section",
                     path=path,
                     symbol_name=sec["title"],
-                    line_start=sec["line_start"],
-                    line_end=sec["line_end"],
+                    line_start=ls,
+                    line_end=le,
                     github_url=github_url,
                     summary=sec["title"],
                     metadata={
@@ -116,10 +117,9 @@ def chunk_markdown(
                         chunk_type="markdown_section",
                         path=path,
                         symbol_name=f"{sec['title']} (part {j + 1})",
-                        line_start=sec["line_start"],
-                        line_end=sec["line_end"],
-                        github_url=_build_code_url(base_url, path, sec["line_start"], sec["line_end"] or sec["line_start"]),
-                        summary=f"{sec['title']} (part {j + 1})",
+                        line_start=ls,
+                        line_end=le,
+                        github_url=github_url,
                         metadata={
                             "heading_level": sec["heading_level"],
                             "heading_path": sec["heading_path"],
@@ -384,7 +384,6 @@ def _chunk_js_fallback(
 def _chunk_text_fallback(
     text: str, path: str, base_url: str, chunk_type: str
 ) -> list[ChunkingResult]:
-    lines = text.split("\n")
     blocks = _split_long_section(text, CHUNK_TARGET_MAX)
 
     results: list[ChunkingResult] = []
