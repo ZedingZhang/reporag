@@ -117,15 +117,15 @@ class GitHubClient:
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
 
-    def fetch_repo_info(self, owner: str, name: str) -> RepoInfo:
+    def fetch_repo_info(self, owner: str, name: str, branch: str | None = None) -> RepoInfo:
         data = self._request(f"/repos/{owner}/{name}")
-        default_branch = data.get("default_branch", "main")
-        latest_commit = self._get_latest_commit(owner, name, default_branch)
+        indexed_branch = branch or data.get("default_branch", "main")
+        latest_commit = self._get_latest_commit(owner, name, indexed_branch)
         return RepoInfo(
             owner=owner,
             name=name,
             url=data["html_url"],
-            default_branch=default_branch,
+            default_branch=indexed_branch,
             latest_commit=latest_commit,
         )
 

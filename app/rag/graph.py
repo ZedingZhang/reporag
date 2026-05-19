@@ -130,8 +130,16 @@ class _NodeContext:
         if not state.reranked_chunks:
             state.evidence_sufficient = False
         else:
-            max_score = max(c.score for c in state.reranked_chunks)
-            state.evidence_sufficient = max_score > 0.01
+            has_keyword_signal = any(
+                c.keyword_score is not None and c.keyword_score > 0
+                for c in state.reranked_chunks
+            )
+            strong_vector_hits = sum(
+                1
+                for c in state.reranked_chunks[:3]
+                if c.vector_score is not None and c.vector_score >= 0.35
+            )
+            state.evidence_sufficient = has_keyword_signal or strong_vector_hits >= 2
         return state
 
     def generate_answer(self, state: RAGState) -> RAGState:
@@ -164,6 +172,8 @@ class _NodeContext:
 
     def validate_citations(self, state: RAGState) -> RAGState:
         if not state.answer or not state.reranked_chunks:
+            return state
+        if not state.evidence_sufficient:
             return state
 
         evidence_urls = {c.github_url or c.chunk_id for c in state.reranked_chunks}
@@ -239,12 +249,6 @@ def _append_citations_to_answer(answer: str, chunks: list[ScoredChunk]) -> str:
     return "\n".join(lines)
 
 
-def _decide_after_evidence(state: RAGState) -> str:
-    if state.evidence_sufficient:
-        return "generate_answer"
-    return "refuse"
-
-
 def build_rag_graph(chat_provider, retriever, reranker=None):
     from app.retrieval.rerank import IdentityReranker
     ctx = _NodeContext(chat_provider, retriever, reranker or IdentityReranker())
@@ -264,11 +268,7 @@ def build_rag_graph(chat_provider, retriever, reranker=None):
     workflow.add_edge("query_rewrite", "hybrid_retrieve")
     workflow.add_edge("hybrid_retrieve", "rerank")
     workflow.add_edge("rerank", "evidence_check")
-    workflow.add_conditional_edges(
-        "evidence_check",
-        _decide_after_evidence,
-        {"generate_answer": "generate_answer", "refuse": END},
-    )
+    workflow.add_edge("evidence_check", "generate_answer")
     workflow.add_edge("generate_answer", "validate_citations")
     workflow.add_edge("validate_citations", END)
 

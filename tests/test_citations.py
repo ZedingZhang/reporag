@@ -77,6 +77,35 @@ class TestExtractCitations:
         )
         assert len(citations) == 0
 
+    def test_strips_markdown_and_sentence_punctuation(self) -> None:
+        answer = (
+            "See [https://github.com/pallets/click/blob/abc/src/core.py#L10-L42], "
+            "then https://github.com/pallets/click/blob/abc/src/utils.py#L5."
+        )
+        citations = extract_citations_from_answer(answer, set())
+
+        assert citations[0].url == (
+            "https://github.com/pallets/click/blob/abc/src/core.py#L10-L42"
+        )
+        assert citations[0].path == "src/core.py"
+        assert citations[0].line_start == 10
+        assert citations[0].line_end == 42
+        assert citations[1].url == (
+            "https://github.com/pallets/click/blob/abc/src/utils.py#L5"
+        )
+        assert citations[1].path == "src/utils.py"
+
+    def test_extracts_issue_and_pr_urls(self) -> None:
+        answer = (
+            "Related discussion: https://github.com/pallets/click/issues/42 "
+            "and https://github.com/pallets/click/pull/100."
+        )
+        citations = extract_citations_from_answer(answer, set())
+
+        assert [c.title for c in citations] == ["Issue #42", "PR #100"]
+        assert citations[0].url == "https://github.com/pallets/click/issues/42"
+        assert citations[1].url == "https://github.com/pallets/click/pull/100"
+
 
 class TestValidateCitations:
     def test_all_valid(self) -> None:
@@ -120,3 +149,14 @@ class TestValidateCitations:
         is_valid, invalid = validate_citations("", set())
         assert is_valid
         assert len(invalid) == 0
+
+    def test_markdown_wrapped_url_is_valid(self) -> None:
+        evidence = {
+            "https://github.com/pallets/click/blob/abc/src/core.py#L10-L42",
+        }
+        answer = (
+            "See [https://github.com/pallets/click/blob/abc/src/core.py#L10-L42]."
+        )
+        is_valid, invalid = validate_citations(answer, evidence)
+        assert is_valid
+        assert invalid == []

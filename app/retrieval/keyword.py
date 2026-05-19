@@ -36,14 +36,17 @@ class KeywordRetriever:
 
         chunks: list[ScoredChunk] = []
         for row in result:
+            score = float(row.score)
             chunks.append(ScoredChunk(
                 chunk_id=row.id,
                 content=row.content,
                 path=row.path,
                 chunk_type=row.chunk_type,
-                score=float(row.score),
+                score=score,
                 github_url=row.github_url,
                 line_start=row.line_start,
                 line_end=row.line_end,
+                keyword_score=score,
+                retrieval_sources={"keyword"},
             ))
         return chunks

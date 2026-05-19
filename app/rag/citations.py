@@ -3,6 +3,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+GITHUB_URL_RE = re.compile(
+    r"https://github\.com/[\w.-]+/[\w.-]+/"
+    r"(?:blob/[A-Za-z0-9._-]+/[^\s\]\)>\"'`,#]+(?:#L\d+(?:-L\d+)?)?"
+    r"|issues/\d+|pull/\d+)"
+)
+TRAILING_URL_PUNCTUATION = ".,;:!?)]}"
+
 
 @dataclass
 class Citation:
@@ -40,8 +47,7 @@ def build_pr_url(owner: str, repo: str, number: int) -> str:
 def extract_citations_from_answer(
     answer: str, valid_urls: set[str]
 ) -> list[Citation]:
-    url_pattern = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/blob/[a-f0-9]+/[^\s\)]+(?:#L\d+(?:-L\d+)?)?")
-    found = url_pattern.findall(answer)
+    found = _extract_github_urls(answer)
 
     citations: list[Citation] = []
     seen: set[str] = set()
@@ -62,13 +68,13 @@ def extract_citations_from_answer(
 def validate_citations(
     answer: str, evidence_urls: set[str]
 ) -> tuple[bool, list[str]]:
-    url_pattern = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/blob/[a-f0-9]+/[^\s\)]+(?:#L\d+(?:-L\d+)?)?")
-    found = url_pattern.findall(answer)
+    found = _extract_github_urls(answer)
+    normalized_evidence = {_clean_url(url) for url in evidence_urls}
 
     valid: list[str] = []
     invalid: list[str] = []
     for url in found:
-        if url in evidence_urls or any(url.startswith(e) for e in evidence_urls):
+        if _is_supported_by_evidence(url, normalized_evidence):
             valid.append(url)
         else:
             invalid.append(url)
@@ -76,7 +82,34 @@ def validate_citations(
     return len(invalid) == 0, invalid
 
 
+def _extract_github_urls(text: str) -> list[str]:
+    return [_clean_url(match.group(0)) for match in GITHUB_URL_RE.finditer(text)]
+
+
+def _clean_url(url: str) -> str:
+    return url.rstrip(TRAILING_URL_PUNCTUATION)
+
+
+def _is_supported_by_evidence(url: str, evidence_urls: set[str]) -> bool:
+    if url in evidence_urls:
+        return True
+    url_base = _without_line_fragment(url)
+    return any(url_base == _without_line_fragment(evidence) for evidence in evidence_urls)
+
+
+def _without_line_fragment(url: str) -> str:
+    return url.split("#", 1)[0]
+
+
 def _extract_title_from_url(url: str) -> str:
+    issue_match = re.search(r"/issues/(\d+)$", url)
+    if issue_match:
+        return f"Issue #{issue_match.group(1)}"
+
+    pr_match = re.search(r"/pull/(\d+)$", url)
+    if pr_match:
+        return f"PR #{pr_match.group(1)}"
+
     parts = url.split("/")
     if len(parts) >= 7:
         filename = parts[-1].split("#")[0]
@@ -85,9 +118,12 @@ def _extract_title_from_url(url: str) -> str:
 
 
 def _extract_path_from_url(url: str) -> str | None:
-    parts = url.split("/")
-    if len(parts) >= 7:
-        return "/".join(parts[5:]).split("#")[0]
+    match = re.match(
+        r"https://github\.com/[^/]+/[^/]+/blob/[^/]+/(.+?)(?:#L\d+(?:-L\d+)?)?$",
+        url,
+    )
+    if match:
+        return match.group(1)
     return None
 
 
