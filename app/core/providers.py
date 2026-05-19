@@ -43,7 +43,29 @@ class OpenAICompatibleChatProvider(ChatProvider):
         if self._reasoning_effort:
             extra["reasoning_effort"] = self._reasoning_effort
         try:
-            response = self._client.chat.completions.create(
+            response = self._create_completion(messages, extra, kwargs)
+        except Exception as e:
+            if extra and _looks_like_unsupported_reasoning_effort(e):
+                logger.info(
+                    "Chat provider rejected reasoning_effort; retrying without it."
+                )
+                response = self._create_completion(messages, {}, kwargs)
+            else:
+                logger.warning("Chat request failed: %s", e)
+                raise
+        content = response.choices[0].message.content
+        if content is None:
+            raise ValueError("LLM returned empty response")
+        return content
+
+    def _create_completion(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        extra: dict[str, object],
+        kwargs: dict[str, object],
+    ):
+        try:
+            return self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
                 **extra,  # type: ignore[arg-type]
@@ -52,10 +74,16 @@ class OpenAICompatibleChatProvider(ChatProvider):
         except Exception as e:
             logger.warning("Chat request failed: %s", e)
             raise
-        content = response.choices[0].message.content
-        if content is None:
-            raise ValueError("LLM returned empty response")
-        return content
+
+
+def _looks_like_unsupported_reasoning_effort(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "reasoning_effort" in message
+        or "unknown parameter" in message
+        or "unsupported parameter" in message
+        or "extra inputs are not permitted" in message
+    )
 
 
 class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):

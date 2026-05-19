@@ -26,6 +26,7 @@ router = APIRouter()
 def _run_ingestion(
     repo_id: str,
     repo_url: str,
+    branch: str | None = None,
     include_issues: bool = True,
     include_pull_requests: bool = True,
     max_issues: int = 30,
@@ -48,7 +49,7 @@ def _run_ingestion(
 
         owner, name = parse_repo_url(repo_url)
         client = GitHubClient()
-        repo_info = client.fetch_repo_info(owner, name)
+        repo_info = client.fetch_repo_info(owner, name, branch=branch)
         repo.default_branch = repo_info.default_branch
         repo.last_indexed_commit = repo_info.latest_commit
         session.commit()
@@ -212,7 +213,7 @@ async def index_repo(
             )
 
         client = GitHubClient()
-        repo_info = client.fetch_repo_info(owner, name)
+        repo_info = client.fetch_repo_info(owner, name, branch=request.branch)
 
         if existing:
             existing.status = "pending"
@@ -234,6 +235,7 @@ async def index_repo(
             _run_ingestion,
             repo_id,
             request.repo_url,
+            request.branch,
             request.include_issues,
             request.include_pull_requests,
             request.max_issues,

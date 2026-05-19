@@ -100,11 +100,15 @@ See `.env.example` for all variables. Key ones:
 | `DEEPSEEK_API_KEY` | API key for the chat model |
 | `DEEPSEEK_BASE_URL` | Base URL for the chat model API |
 | `DEEPSEEK_MODEL` | Model name (e.g., `deepseek-v4-pro`) |
-| `DEEPSEEK_REASONING_EFFORT` | Optional reasoning effort (set empty to disable) |
+| `DEEPSEEK_REASONING_EFFORT` | Optional reasoning effort; leave empty unless your endpoint supports it |
 | `EMBEDDING_PROVIDER` | Embedding provider (`openai_compatible`) |
 | `EMBEDDING_API_KEY` | API key for embeddings |
 | `EMBEDDING_MODEL` | Embedding model name |
 | `EMBEDDING_DIMENSIONS` | Embedding vector dimensions (must match model output) |
+
+The initial migration creates a 1536-dimensional pgvector column. If you switch to
+an embedding model with a different output dimension, create a new migration that
+updates the vector column dimension before re-indexing.
 
 ## API
 
