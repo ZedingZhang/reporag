@@ -22,6 +22,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _get_vector_dim() -> int | None:
+    try:
+        from app.core.config import settings
+        return settings.embedding_dimensions
+    except Exception:
+        return None
+
+
 class Repository(Base):
     __tablename__ = "repositories"
 
@@ -92,7 +100,7 @@ class Chunk(Base):
     line_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     line_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     github_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    embedding = mapped_column(Vector(), nullable=True)
+    embedding = mapped_column(Vector(_get_vector_dim()), nullable=True)
     metadata_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     content_tsv = mapped_column(
         TSVECTOR,
