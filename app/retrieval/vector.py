@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db.models import Chunk
 from app.ingestion.embeddings import EmbeddingClient
 
 logger = logging.getLogger(__name__)

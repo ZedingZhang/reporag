@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from app.core.config import settings
 from app.core.providers import (
     EmbeddingProvider,
-    OpenAICompatibleEmbeddingProvider,
     get_embedding_provider,
 )
 
