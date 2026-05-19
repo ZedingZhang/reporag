@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
-    deepseek_reasoning_effort: str = "medium"
+    deepseek_reasoning_effort: str = ""
 
     embedding_provider: str = "openai_compatible"
     embedding_api_key: str = ""

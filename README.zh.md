@@ -104,11 +104,14 @@ curl -X POST http://localhost:8000/api/chat \
 | `DEEPSEEK_API_KEY` | Chat 模型 API Key |
 | `DEEPSEEK_BASE_URL` | Chat 模型 API 地址 |
 | `DEEPSEEK_MODEL` | 模型名称（如 `deepseek-v4-pro`） |
-| `DEEPSEEK_REASONING_EFFORT` | 可选 reasoning effort（设为空禁用） |
+| `DEEPSEEK_REASONING_EFFORT` | 可选 reasoning effort；仅在 endpoint 支持时填写 |
 | `EMBEDDING_PROVIDER` | Embedding 提供商 |
 | `EMBEDDING_API_KEY` | Embedding API Key |
 | `EMBEDDING_MODEL` | Embedding 模型名称 |
 | `EMBEDDING_DIMENSIONS` | 向量维度（必须与模型输出一致） |
+
+初始 migration 创建的是 1536 维 pgvector 列。如果更换为其他输出维度的
+embedding 模型，需要先新增 migration 调整向量列维度，再重新索引仓库。
 
 ## API
 
