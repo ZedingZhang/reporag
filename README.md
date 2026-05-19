@@ -1,5 +1,7 @@
 # RepoRAG
 
+[中文文档](README.zh.md) | [English](README.md)
+
 RAG assistant for understanding GitHub repositories with source-grounded answers, code-aware retrieval, and measurable retrieval quality.
 
 ## Core Features
