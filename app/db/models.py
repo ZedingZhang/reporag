@@ -74,6 +74,44 @@ class AgentStep(Base):
     run: Mapped[AgentRun] = relationship(back_populates="steps")
 
 
+class ApprovalRequest(Base):
+    __tablename__ = "approval_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False,
+    )
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    risk_level: Mapped[str] = mapped_column(String(50), default="medium")
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+    review_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
+class ToolExecution(Base):
+    __tablename__ = "tool_executions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False,
+    )
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    output_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="running")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+
+
 class Repository(Base):
     __tablename__ = "repositories"
 

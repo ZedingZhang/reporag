@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 
 from app.agent.graph import build_agent_graph
 from app.agent.state import AgentState
-from app.db.models import AgentRun, AgentStep
+from app.db.models import AgentRun, AgentStep, ApprovalRequest
+from app.security.approvals import ApprovalManager
 
 logger = logging.getLogger(__name__)
 
 
 class AgentService:
-    def __init__(self, session, chat_provider, retriever):
+    def __init__(self, session, chat_provider=None, retriever=None):
         self._session = session
         self._chat = chat_provider
         self._retriever = retriever
@@ -43,6 +44,8 @@ class AgentService:
                 "final_summary": result["final_summary"],
                 "target_files": result["target_files"][:20],
                 "retrieved_chunks": len(result["retrieved_context"]),
+                "proposed_patch": result["proposed_patch"][:3000],
+                "command_plan": result["command_plan"],
             }
             run.status = result["status"]
             run.updated_at = datetime.now(timezone.utc)
@@ -62,6 +65,12 @@ class AgentService:
             self._session.query(AgentStep)
             .filter(AgentStep.run_id == run_id)
             .order_by(AgentStep.created_at)
+            .all()
+        )
+        approvals = (
+            self._session.query(ApprovalRequest)
+            .filter(ApprovalRequest.run_id == run_id)
+            .order_by(ApprovalRequest.created_at)
             .all()
         )
         return {
@@ -86,6 +95,17 @@ class AgentService:
                 }
                 for s in steps
             ],
+            "approvals": [
+                {
+                    "approval_id": a.id,
+                    "action_type": a.action_type,
+                    "summary": a.summary,
+                    "risk_level": a.risk_level,
+                    "status": a.status,
+                    "review_comment": a.review_comment,
+                }
+                for a in approvals
+            ],
         }
 
     def get_steps(self, run_id: str) -> list[dict]:
@@ -108,6 +128,36 @@ class AgentService:
             }
             for s in steps
         ]
+
+    def resolve_approval(
+        self, approval_id: str, decision: str, comment: str = "",
+    ) -> dict | None:
+        mgr = ApprovalManager(self._session)
+        approval = mgr.resolve(approval_id, decision, comment)
+        if not approval:
+            return None
+        self._session.commit()
+
+        run = (
+            self._session.query(AgentRun)
+            .filter(AgentRun.id == approval.run_id)
+            .first()
+        )
+        if run:
+            if decision == "approved":
+                run.status = "running"
+            else:
+                run.status = "failed"
+                run.error = f"Approval {approval_id} was rejected: {comment}"
+            run.updated_at = datetime.now(timezone.utc)
+            self._session.commit()
+
+        return {
+            "approval_id": approval.id,
+            "run_id": approval.run_id,
+            "status": approval.status,
+            "review_comment": approval.review_comment,
+        }
 
     def cancel_run(self, run_id: str) -> bool:
         run = self._session.query(AgentRun).filter(AgentRun.id == run_id).first()
