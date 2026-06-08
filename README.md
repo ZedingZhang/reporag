@@ -94,7 +94,7 @@ classify_task ──► retrieve_context ──► build_plan
 | LLM | DeepSeek V4 (OpenAI-compatible, swappable) |
 | Embeddings | OpenAI-compatible provider (swappable) |
 | MCP | FastMCP (Python >=3.10) |
-| Dev tools | pytest (152 tests), ruff, Alembic |
+| Dev tools | pytest (159 tests), ruff, Alembic |
 
 ## Quick Start
 
@@ -187,7 +187,7 @@ app/
   api/           FastAPI routes (RAG + Agent)
 streamlit_app/   Q&A tab + Agent tab
 scripts/         ingest_repo, evaluate, evaluate_agent
-tests/           152 pytest tests
+tests/           159 pytest tests
 ```
 
 ## Resume Highlights
