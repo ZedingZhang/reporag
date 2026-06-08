@@ -132,6 +132,7 @@ def apply_patch_to_workspace(diff: str, workspace_root: str) -> PatchApplyResult
                 files=validation.files,
             )
 
+    tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".diff", delete=False, prefix="reporag_patch_",
@@ -156,7 +157,6 @@ def apply_patch_to_workspace(diff: str, workspace_root: str) -> PatchApplyResult
             ["git", "apply", tmp_path],
             cwd=str(root), capture_output=True, text=True, timeout=30,
         )
-        Path(tmp_path).unlink(missing_ok=True)
 
         if apply_result.returncode != 0:
             return PatchApplyResult(
@@ -174,13 +174,14 @@ def apply_patch_to_workspace(diff: str, workspace_root: str) -> PatchApplyResult
         )
 
     except subprocess.TimeoutExpired:
-        Path(tmp_path).unlink(missing_ok=True)
         return PatchApplyResult(
             success=False, status="timeout",
             error="git apply timed out after 30s",
         )
     except Exception as e:
-        Path(tmp_path).unlink(missing_ok=True)
         return PatchApplyResult(
             success=False, status="error", error=str(e),
         )
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
