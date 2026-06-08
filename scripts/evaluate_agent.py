@@ -75,8 +75,9 @@ def _eval_one_live(item: dict, repo_id: str, chat, retriever, session) -> dict:
     t0 = time.monotonic()
     from app.agent.graph import build_agent_graph
     from app.agent.state import AgentState
+    from app.db.session import get_sync_session
 
-    graph = build_agent_graph(chat, retriever, lambda: session)
+    graph = build_agent_graph(chat, retriever, get_sync_session)
     state = AgentState(
         run_id=f"eval-{item['id']}", repo_id=repo_id,
         task=item["task"], mode=item.get("mode", "plan_only"), top_k=8,
