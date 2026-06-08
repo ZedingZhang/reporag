@@ -2,152 +2,194 @@
 
 [中文文档](README.zh.md) | [English](README.md)
 
-RAG assistant for understanding GitHub repositories with source-grounded answers, code-aware retrieval, and measurable retrieval quality.
-
-## Status
-
-Phase 1-4 complete. Working: repo indexing, chunking, embedding, hybrid retrieval, RAG pipeline, citation validation, Streamlit UI, evaluation framework. Phase 5 (polish, multi-repo, advanced reranker) in progress.
+A GitHub repository RAG assistant with an agentic code maintenance workbench — source-grounded answers, hybrid retrieval, LangGraph agent orchestration, human-in-the-loop approvals, sandboxed execution, MCP tools, and trajectory-based evaluation.
 
 ## Core Features
 
-- **Code-aware chunking** — chunks Markdown by headings, Python source by AST functions/classes, preserves line numbers and commit SHAs
-- **Hybrid retrieval** — combines vector (semantic) and keyword (full-text) search with Reciprocal Rank Fusion
-- **RAG pipeline** — LangGraph-inspired workflow: question classification, query rewrite, hybrid retrieval, rerank, evidence check, answer generation, citation validation
-- **Citation validation** — every answer includes GitHub permalinks with file paths and line ranges; fabricated citations are detected
-- **Background ingestion** — POST a GitHub URL, indexing runs asynchronously via FastAPI BackgroundTasks
-- **Evaluation framework** — Recall@k, MRR, citation coverage, latency metrics driven by a JSONL dataset
+### RAG Engine (Phase 1-4)
+- **Code-aware chunking** — Markdown by headings, Python by AST functions/classes, JS/TS by regex fallback; preserves line numbers and commit SHAs
+- **Hybrid retrieval** — vector (pgvector) + keyword (PostgreSQL full-text search) with Reciprocal Rank Fusion
+- **Citation validation** — every answer includes GitHub permalinks with file paths and line ranges; fabricated citations detected and stripped
+- **LangGraph RAG pipeline** — question classification → query rewrite → hybrid retrieval → rerank → evidence check → generate → validate
+
+### Agentic Extension (Phase 1-7)
+- **LangGraph agent workflow** — classify task → retrieve context → build plan → propose patch → request approval → apply/run tests → summarize
+- **Human-in-the-loop approvals** — high-risk actions (apply_patch, run_command, create_pr) require explicit approval
+- **Security guards** — CommandGuard (allowlist: pytest/ruff/python; blocks rm/sudo/curl/ssh + shell metacharacters), PathGuard (blocks .env/.git/credentials + parent traversal)
+- **Safe execution** — `subprocess.run` without `shell=True`, 60s timeout, stdout/stderr capture, ToolExecution audit log
+- **Patch proposal** — LLM generates unified diffs, auto-validated for diff format correctness
+- **MCP server** — 4 tools (search_code, create_agent_run, get_agent_run, resolve_approval) for Claude Code integration
+- **Agent evaluation** — plan_success, context_hit_rate, approval_accuracy, patch_validity, latency
 
 ## Architecture
 
 ```
-User → Streamlit UI → FastAPI (BackgroundTasks)
-                         ├── POST /api/repos/index → GitHub Client → Chunkers → Embedding → DB
-                         └── POST /api/chat → Query Rewrite → Hybrid Retrieval → Rerank → LLM → Citations
-                              ↑                                                                    ↓
-                              └────────── PostgreSQL + pgvector (vector + full-text) ──────────────┘
+┌──────────────────────────────────────────────────────┐
+│                   Streamlit UI                        │
+│   Q&A Tab  │  Agent Tab (run, plan, patch, approve)  │
+└──────────┬─────────────────────┬─────────────────────┘
+           │                     │
+     ┌─────▼─────┐        ┌─────▼──────────────────────┐
+     │  /api/chat │        │  /api/agent/runs           │
+     │  RAG Graph │        │  Agent Graph (LangGraph)     │
+     │            │        │                             │
+     │ classify   │        │  classify_task              │
+     │ rewrite    │        │  retrieve_context           │
+     │ retrieve   │        │  build_plan                 │
+     │ rerank     │        │  propose_patch              │
+     │ evidence   │        │  request_approval ◄─human──┐│
+     │ generate   │        │  wait_for_approval         ││
+     │ validate   │        │  apply_patch               ││
+     └─────┬──────┘        │  run_tests (executor)       ││
+           │               │  summarize                  ││
+           │               └─────────────────────────────┘│
+           │                                              │
+     ┌─────▼──────────────────────────────────────────────▼──┐
+     │              PostgreSQL + pgvector                      │
+     │  repositories │ documents │ chunks │ agent_runs         │
+     │  agent_steps  │ approval_requests │ tool_executions    │
+     └────────────────────────────────────────────────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │   RepoRAG MCP Server    │
+           │   (Claude Code tools)   │
+           └─────────────────────────┘
 ```
+
+## Agent Workflow (LangGraph)
+
+```
+classify_task ──► retrieve_context ──► build_plan
+                                          │
+                   plan_only ──► summarize ◄── approved/rejected
+                   propose_patch / execute ──► propose_patch
+                                                  │
+                                            request_approval
+                                                  │
+                              not_required ──► summarize
+                              pending ──► wait_for_approval ──► END
+                              approved ──► apply_patch ──► run_tests ──► summarize
+```
+
+## Safety and Approval Model
+
+| Risk Level | Examples | Requires Approval |
+|------------|----------|-------------------|
+| Low | read-only retrieval, list repos | No |
+| Medium | pytest, ruff check | Yes (in execute mode) |
+| High | apply patch, rm, curl, git push, create PR | Yes |
+
+**CommandGuard blocks**: `rm`, `sudo`, `curl`, `wget`, `ssh`, `nc`, `chmod`, `chown`, `git push`, `git reset --hard`, shell metacharacters (`|`, `;`, `&&`, `$()`, `` ` ``, `>`, `<`)
+
+**PathGuard blocks**: `.env`, `.git/`, credentials files, parent traversal (`..`)
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python 3.11+, FastAPI |
-| RAG Pipeline | LangChain (providers), LangGraph pattern |
-| Database | PostgreSQL + pgvector |
-| Frontend | Streamlit |
-| LLM | DeepSeek V4 (OpenAI-compatible), swappable |
-| Embeddings | OpenAI-compatible provider, swappable |
-| Dev tools | pytest (36 tests), ruff, Alembic |
+| RAG/Agent | LangChain (langchain-openai, langchain-core), LangGraph |
+| Database | PostgreSQL + pgvector (+ full-text search) |
+| Frontend | Streamlit (Q&A + Agent tabs) |
+| LLM | DeepSeek V4 (OpenAI-compatible, swappable) |
+| Embeddings | OpenAI-compatible provider (swappable) |
+| MCP | FastMCP (Python >=3.10) |
+| Dev tools | pytest (114 tests), ruff, Alembic |
 
 ## Quick Start
 
-### Prerequisites
-
-- Docker and Docker Compose
-- DeepSeek API key (or any OpenAI-compatible API)
-- GitHub token (optional, raises rate limit from 60 to 5000 req/h)
-
-### Setup
-
 ```bash
-git clone https://github.com/nebula167/reporag.git
+git clone https://github.com/ZedingZhang/reporag.git
 cd reporag
-
-cp .env.example .env
-# Edit .env with your API keys
-
-docker compose up --build
+cp .env.example .env           # edit with your API keys
+docker compose up --build       # auto-runs migrations
 ```
 
 - FastAPI docs: http://localhost:8000/docs
 - Streamlit UI: http://localhost:8501
 
-Migrations run automatically on container start.
-
-### Index a Repository
-
-Via API:
-```bash
-curl -X POST http://localhost:8000/api/repos/index \
-  -H "Content-Type: application/json" \
-  -d '{"repo_url":"https://github.com/pallets/click"}'
-```
-
-Or via CLI:
-```bash
-python scripts/ingest_repo.py --repo https://github.com/pallets/click
-```
-
-### Ask Questions
-
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"repo_id":"<repo_id>","question":"Where is command parsing implemented?","top_k":8}'
-```
-
-Response includes `answer`, `citations` (with GitHub permalinks and line numbers), `retrieved_chunks`, and `confidence`.
-
 ## Environment Variables
 
-See `.env.example` for all variables. Key ones:
+See `.env.example`. Key variables:
 
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `GITHUB_TOKEN` | GitHub personal access token (optional, raises rate limit) |
-| `LLM_PROVIDER` | LLM provider (`deepseek` or `openai_compatible`) |
-| `DEEPSEEK_API_KEY` | API key for the chat model |
-| `DEEPSEEK_BASE_URL` | Base URL for the chat model API |
+| `GITHUB_TOKEN` | GitHub token (raises rate limit from 60→5000 req/h) |
+| `DEEPSEEK_API_KEY` | Chat model API key |
 | `DEEPSEEK_MODEL` | Model name (e.g., `deepseek-v4-pro`) |
-| `DEEPSEEK_REASONING_EFFORT` | Optional reasoning effort; leave empty unless your endpoint supports it |
-| `EMBEDDING_PROVIDER` | Embedding provider (`openai_compatible`) |
-| `EMBEDDING_API_KEY` | API key for embeddings |
-| `EMBEDDING_MODEL` | Embedding model name |
-| `EMBEDDING_DIMENSIONS` | Embedding vector dimensions (must match model output) |
-
-The initial migration creates a 1536-dimensional pgvector column. If you switch to
-an embedding model with a different output dimension, create a new migration that
-updates the vector column dimension before re-indexing.
+| `EMBEDDING_API_KEY` | Embedding API key |
+| `EMBEDDING_DIMENSIONS` | Vector dimensions (must match model) |
 
 ## API
 
+### RAG Endpoints
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/repos/index` | Index a GitHub repository (async) |
-| `POST` | `/api/chat` | Ask a question, get cited answer |
-| `GET` | `/api/repos` | List all indexed repositories |
-| `GET` | `/api/repos/{id}/status` | Get repository indexing status |
+| POST | `/api/repos/index` | Index a GitHub repo (async background) |
+| POST | `/api/chat` | Ask a question, get cited answer |
+| GET | `/api/repos` | List indexed repos |
+| GET | `/api/repos/{id}/status` | Get repo indexing status |
+
+### Agent Endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/agent/runs` | Create an agent run |
+| GET | `/api/agent/runs/{id}` | Get run (plan, patch, approvals, steps) |
+| GET | `/api/agent/runs/{id}/steps` | List run steps |
+| POST | `/api/agent/runs/{id}/continue` | Resume run after approval |
+| POST | `/api/agent/runs/{id}/cancel` | Cancel a run |
+| POST | `/api/agent/approvals/{aid}/resolve` | Approve or reject |
+
+## MCP Integration
+
+```bash
+cp .mcp.example.json ~/.claude/mcp.json  # edit with your keys
+```
+
+Claude Code can then use these tools: `search_code`, `create_agent_run`, `get_agent_run`, `resolve_approval`.
 
 ## Evaluation
 
+### RAG Evaluation
 ```bash
 python scripts/evaluate.py --dataset examples/eval_dataset.jsonl
 ```
+Metrics: Recall@5, MRR, Citation Coverage, Latency.
 
-Evaluates against indexed repos. Metrics: Recall@5, MRR, Citation Coverage, Avg Latency.
-
-The eval dataset (`examples/eval_dataset.jsonl`) contains real questions for real public repos. Repos must be indexed before running evaluation.
+### Agent Evaluation
+```bash
+python scripts/evaluate_agent.py --dataset examples/agent_tasks.jsonl
+```
+Metrics: plan_success, context_hit_rate, approval_required_accuracy, patch_validity, avg_latency.
 
 ## Project Structure
 
 ```
 app/
-  core/          config, logging, provider adapters (LLM + embedding)
-  db/            SQLAlchemy models, session, Alembic migrations
-  github/        GitHub REST API client, URL parser
-  ingestion/     chunkers (markdown, Python AST, JS/TS), embedding client
-  retrieval/     vector search, keyword search, hybrid fusion, reranker interface
-  rag/           LangGraph-style pipeline, prompts, citation validation
-  api/           FastAPI routes, Pydantic schemas
-streamlit_app/   Streamlit UI
-scripts/         ingest_repo.py, evaluate.py
-tests/           36 pytest tests
+  core/          Config, logging, provider adapters (ChatOpenAI, OpenAIEmbeddings)
+  db/            SQLAlchemy models (7 tables), Alembic migrations
+  github/        GitHub REST API client
+  ingestion/     Chunkers (markdown, Python AST, JS/TS), embedding client
+  retrieval/     Vector search, keyword search, hybrid fusion, reranker
+  rag/           LangGraph RAG pipeline, prompts, citation validation
+  agent/         LangGraph agent workflow, state, prompts, service
+  tools/         repo_context, patch, executor, github_tools
+  security/      CommandGuard, PathGuard, ApprovalPolicy, ApprovalManager
+  mcp/           FastMCP server for Claude Code
+  api/           FastAPI routes (RAG + Agent)
+streamlit_app/   Q&A tab + Agent tab
+scripts/         ingest_repo, evaluate, evaluate_agent
+tests/           114 pytest tests
 ```
 
-## Resume Highlight
+## Resume Highlights
 
-> Built RepoRAG, a GitHub repository RAG assistant with code-aware chunking, hybrid retrieval, reranking, citation validation, and a LangGraph-inspired answer generation pipeline. Includes evaluation framework with Recall@k, MRR, citation coverage, and latency metrics.
+> Built RepoRAG, a GitHub repository RAG assistant with code-aware chunking, hybrid retrieval, citation validation, and LangGraph-based answer generation.
+
+> Extended RepoRAG into an agentic code maintenance workbench using LangGraph, MCP tools, human-in-the-loop approvals, sandboxed command execution, trace logging, and trajectory-based agent evaluation.
+
+> Designed secure agent tooling for repository maintenance with schema-validated tools, path and command guards, approval gates for write operations, and eval metrics covering context hit rate, patch validity, unsafe-command blocking, latency, and tool-call count.
 
 ## Roadmap
 
@@ -155,10 +197,12 @@ tests/           36 pytest tests
 - [x] Hybrid retrieval with RRF fusion
 - [x] Citation validation with GitHub permalinks
 - [x] Background ingestion API
-- [x] RAG pipeline (query rewrite → retrieve → rerank → generate → validate)
-- [x] Streamlit UI connected to API
-- [x] Evaluation framework with real retriever
-- [ ] Cross-encoder reranker (currently identity reranker)
+- [x] LangGraph RAG pipeline
+- [x] Agent graph (classify → plan → patch → approve → execute)
+- [x] Approval system + security guards
+- [x] Safe command execution
+- [x] MCP server for Claude Code
+- [x] Agent evaluation framework
+- [ ] Cross-encoder reranker
 - [ ] Multi-repo cross-reference
-- [ ] Webhook-based re-indexing
 - [ ] Next.js + shadcn/ui frontend
