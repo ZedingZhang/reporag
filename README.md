@@ -144,7 +144,14 @@ See `.env.example`. Key variables:
 ## MCP Integration
 
 ```bash
-cp .mcp.example.json ~/.claude/mcp.json  # edit with your keys
+# Install MCP SDK locally (requires Python >=3.10)
+python3 -m pip install -e ".[mcp]"
+
+# Start the MCP server
+python3 -m app.mcp.server
+
+# Or configure Claude Code to launch it automatically:
+cp .mcp.example.json ~/.claude/mcp.json  # edit with your API keys
 ```
 
 Claude Code can then use these tools: `search_code`, `create_agent_run`, `get_agent_run`, `resolve_approval`.

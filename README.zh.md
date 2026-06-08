@@ -131,6 +131,13 @@ docker compose up --build       # 自动执行 migration
 ## MCP 集成
 
 ```bash
+# 本地安装 MCP SDK（需要 Python >=3.10）
+python3 -m pip install -e ".[mcp]"
+
+# 启动 MCP server
+python3 -m app.mcp.server
+
+# 或配置 Claude Code 自动启动：
 cp .mcp.example.json ~/.claude/mcp.json  # 填入 API Key
 ```
 
