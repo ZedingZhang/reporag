@@ -61,7 +61,6 @@ class TestPathGuard:
         result = guard.check_write("../etc/passwd")
         assert not result.allowed
 
-
     def test_blocks_env_file(self) -> None:
         import os
 
@@ -76,4 +75,35 @@ class TestPathGuard:
         from app.security.path_guard import PathGuard
         guard = PathGuard(os.getcwd())
         result = guard.check_write(".git/config")
+        assert not result.allowed
+
+    def test_blocks_prefix_sibling_escape(self) -> None:
+        from app.security.path_guard import PathGuard
+        guard = PathGuard("/tmp/work")
+        assert not guard.check_write("/tmp/work_evil/file.py").allowed
+
+    def test_relative_path_resolves_under_root(self) -> None:
+        from app.security.path_guard import PathGuard
+        guard = PathGuard("/tmp/work")
+        assert guard.check_write("tests/test_x.py").allowed
+
+    def test_read_blocks_outside_workspace(self) -> None:
+        from app.security.path_guard import PathGuard
+        guard = PathGuard("/tmp/work")
+        assert not guard.check_read("/etc/passwd").allowed
+
+    def test_blocks_env_suffix(self) -> None:
+        import os
+
+        from app.security.path_guard import PathGuard
+        guard = PathGuard(os.getcwd())
+        result = guard.check_write(".env.production")
+        assert not result.allowed
+
+    def test_blocks_credentials_filename(self) -> None:
+        import os
+
+        from app.security.path_guard import PathGuard
+        guard = PathGuard(os.getcwd())
+        result = guard.check_write("config/credentials.json")
         assert not result.allowed

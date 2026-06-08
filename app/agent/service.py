@@ -242,29 +242,46 @@ class AgentService:
         if state.mode in ("propose_patch",):
             state.status = "completed"
             state.final_summary = (
-                "Patch proposal approved. No commands executed per mode policy."
+                "Patch proposal approved. No tests executed per mode policy."
             )
             ctx._record_step(
                 state, "apply_patch",
-                output_data={"status": result_data["patch_apply_status"]},
+                output_data={
+                    "status": result_data["patch_apply_status"],
+                    "tests_executed": False,
+                    "tests_skipped_reason": "propose_patch mode does not execute tests",
+                },
             )
             ctx.summarize(state)
-
-            if has_apply:
+        elif state.mode == "execute_after_approval":
+            patch_applied = result_data.get("patch_apply_status") == "applied"
+            if not patch_applied and not state.proposed_patch:
+                state.status = "completed"
+                state.final_summary = "No patch available; nothing to execute."
+                ctx.summarize(state)
+            elif not patch_applied:
+                state.status = "completed"
+                state.final_summary = (
+                    "Patch not applied (no workspace configured). "
+                    "Tests skipped."
+                )
                 ctx._record_step(
-                    state, "run_tests",
+                    state, "apply_patch",
                     output_data={
-                        "status": "skipped (propose_patch mode, tests not executed)",
+                        "status": result_data["patch_apply_status"],
+                        "tests_executed": False,
+                        "tests_skipped_reason": "no workspace configured",
                     },
                 )
-        elif state.mode == "execute_after_approval":
-            ctx.apply_patch(state)
-            ctx.run_tests(state)
-            ctx.summarize(state)
-            result_data["command_results"] = [
-                {"command": c.get("command"), "status": c.get("status")}
-                for c in state.command_results
-            ]
+                ctx.summarize(state)
+            else:
+                ctx.apply_patch(state)
+                ctx.run_tests(state)
+                ctx.summarize(state)
+                result_data["command_results"] = [
+                    {"command": c.get("command"), "status": c.get("status")}
+                    for c in state.command_results
+                ]
 
         run.result_json = {**result_data}
         run.status = state.status
