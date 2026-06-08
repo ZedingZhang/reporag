@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -20,6 +26,16 @@ class PatchSummary:
     removed_lines: int
     files: list[str]
     is_no_patch: bool = False
+
+
+@dataclass
+class PatchApplyResult:
+    success: bool
+    files: list[str] = field(default_factory=list)
+    status: str = ""
+    stdout: str = ""
+    stderr: str = ""
+    error: str = ""
 
 
 def validate_unified_diff(diff: str) -> PatchValidationResult:
@@ -89,3 +105,82 @@ def summarize_patch(diff: str) -> PatchSummary:
         removed_lines=removed,
         files=result.files,
     )
+
+
+def apply_patch_to_workspace(diff: str, workspace_root: str) -> PatchApplyResult:
+    validation = validate_unified_diff(diff)
+    if not validation.valid:
+        return PatchApplyResult(
+            success=False, status="invalid_diff", error=validation.reason,
+        )
+
+    root = Path(workspace_root).resolve()
+    if not root.exists():
+        return PatchApplyResult(
+            success=False, status="no_workspace",
+            error=f"Workspace root does not exist: {root}",
+        )
+
+    from app.security.path_guard import PathGuard
+    guard = PathGuard(str(root))
+    for f in validation.files:
+        check = guard.check_write(f)
+        if not check.allowed:
+            return PatchApplyResult(
+                success=False, status="path_blocked",
+                error=f"PathGuard blocked {f}: {check.reason}",
+                files=validation.files,
+            )
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".diff", delete=False, prefix="reporag_patch_",
+        ) as tmp:
+            tmp.write(diff)
+            tmp_path = tmp.name
+
+        check_result = subprocess.run(
+            ["git", "apply", "--check", tmp_path],
+            cwd=str(root), capture_output=True, text=True, timeout=30,
+        )
+        if check_result.returncode != 0:
+            return PatchApplyResult(
+                success=False, status="check_failed",
+                stdout=check_result.stdout[:2000],
+                stderr=check_result.stderr[:2000],
+                error=f"git apply --check failed: {check_result.stderr[:500]}",
+                files=validation.files,
+            )
+
+        apply_result = subprocess.run(
+            ["git", "apply", tmp_path],
+            cwd=str(root), capture_output=True, text=True, timeout=30,
+        )
+        Path(tmp_path).unlink(missing_ok=True)
+
+        if apply_result.returncode != 0:
+            return PatchApplyResult(
+                success=False, status="apply_failed",
+                stdout=apply_result.stdout[:2000],
+                stderr=apply_result.stderr[:2000],
+                error=f"git apply failed: {apply_result.stderr[:500]}",
+                files=validation.files,
+            )
+
+        return PatchApplyResult(
+            success=True, status="applied",
+            stdout=apply_result.stdout[:2000],
+            files=validation.files,
+        )
+
+    except subprocess.TimeoutExpired:
+        Path(tmp_path).unlink(missing_ok=True)
+        return PatchApplyResult(
+            success=False, status="timeout",
+            error="git apply timed out after 30s",
+        )
+    except Exception as e:
+        Path(tmp_path).unlink(missing_ok=True)
+        return PatchApplyResult(
+            success=False, status="error", error=str(e),
+        )

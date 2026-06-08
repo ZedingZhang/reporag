@@ -63,6 +63,24 @@ class TestAgentEvalMetrics:
         assert compute_approval_required_accuracy(False, True) == 0.5
 
 
+class TestEvalModes:
+    def test_smoke_mode_is_default(self) -> None:
+        from scripts.evaluate_agent import build_parser
+        parser = build_parser()
+        args = parser.parse_args(["--dataset", "examples/agent_tasks.jsonl"])
+        assert args.mode == "smoke"
+
+    def test_live_mode_requires_repo_id(self) -> None:
+        from scripts.evaluate_agent import build_parser
+        parser = build_parser()
+        args = parser.parse_args([
+            "--dataset", "examples/agent_tasks.jsonl",
+            "--mode", "live",
+        ])
+        assert args.mode == "live"
+        assert args.repo_id is None
+
+
 class TestObservabilityMetrics:
     def test_run_metrics_aggregation(self) -> None:
         from app.observability.metrics import aggregate_run_metrics
