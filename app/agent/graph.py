@@ -45,6 +45,22 @@ class _AgentNodeContext:
         finally:
             session.close()
 
+    def _update_run_status(self, run_id: str, status: str) -> None:
+        from datetime import datetime, timezone
+
+        from app.db.models import AgentRun
+        session = self.session_factory()
+        try:
+            run = session.query(AgentRun).filter(AgentRun.id == run_id).first()
+            if run:
+                run.status = status
+                run.updated_at = datetime.now(timezone.utc)
+                session.commit()
+        except Exception:
+            logger.exception("Failed to update run status")
+        finally:
+            session.close()
+
     def classify_task(self, state: AgentState) -> AgentState:
         t0 = time.monotonic()
         prompt = TASK_CLASSIFIER_PROMPT.format(task=state.task)
@@ -134,6 +150,153 @@ class _AgentNodeContext:
         )
         return state
 
+    def propose_patch(self, state: AgentState) -> AgentState:
+        t0 = time.monotonic()
+        state.proposed_patch = ""
+        if state.mode == "plan_only":
+            self._record_step(
+                state, "propose_patch",
+                output_data={"patch": "skipped (plan_only mode)"},
+                latency_ms=0,
+            )
+            return state
+        evidence = _format_evidence(state.retrieved_context)
+        plan_text = json.dumps(state.plan, indent=2)
+        prompt = (
+            f"You are proposing a minimal patch.\n"
+            f"Use only files in evidence. Produce unified diff only.\n"
+            f"Keep patch minimal. Do not modify secrets or lockfiles.\n"
+            f"If evidence insufficient, return NO_PATCH.\n\n"
+            f"Task: {state.task}\n\nPlan: {plan_text}\n\nEvidence:\n{evidence}"
+        )
+        try:
+            result = self.chat.chat([
+                {"role": "system", "content": "You propose minimal code patches."},
+                {"role": "user", "content": prompt},
+            ])
+            state.proposed_patch = result.strip()
+        except Exception:
+            logger.exception("Patch proposal failed")
+            state.errors.append("Patch proposal failed")
+        self._record_step(
+            state, "propose_patch",
+            output_data={"patch_len": len(state.proposed_patch)},
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return state
+
+    def request_approval(self, state: AgentState) -> AgentState:
+        t0 = time.monotonic()
+        from app.security.approvals import ApprovalManager
+
+        session = self.session_factory()
+        try:
+            mgr = ApprovalManager(session)
+
+            needs_approval = False
+            for step in state.plan:
+                if step.get("requires_approval") and state.mode == "execute_after_approval":
+                    needs_approval = True
+                    break
+            if state.proposed_patch and state.proposed_patch != "NO_PATCH":
+                if state.mode in ("propose_patch", "execute_after_approval"):
+                    needs_approval = True
+
+            if needs_approval:
+                approval_id = mgr.create_approval(
+                    run_id=state.run_id,
+                    action_type="apply_patch",
+                    summary=f"Patch for: {state.task[:100]}",
+                    payload={"patch": state.proposed_patch[:2000]},
+                    risk_level="medium",
+                )
+                session.commit()
+                state.approval_id = approval_id
+                state.approval_status = "pending"
+                state.status = "waiting_approval"
+                self._update_run_status(state.run_id, "waiting_approval")
+            else:
+                state.approval_status = "not_required"
+        finally:
+            session.close()
+        self._record_step(
+            state, "request_approval",
+            output_data={
+                "approval_id": state.approval_id,
+                "approval_status": state.approval_status,
+            },
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return state
+
+    def wait_for_approval(self, state: AgentState) -> AgentState:
+        t0 = time.monotonic()
+        if state.approval_status == "not_required":
+            self._record_step(
+                state, "wait_for_approval",
+                output_data={"result": "not_required"},
+                latency_ms=0,
+            )
+            return state
+        if state.approval_status == "approved":
+            self._record_step(
+                state, "wait_for_approval",
+                output_data={"result": "approved"},
+                latency_ms=int((time.monotonic() - t0) * 1000),
+            )
+            return state
+        if state.approval_status == "rejected":
+            state.errors.append("Approval rejected")
+            self._record_step(
+                state, "wait_for_approval",
+                output_data={"result": "rejected"},
+                latency_ms=int((time.monotonic() - t0) * 1000),
+            )
+            return state
+        self._record_step(
+            state, "wait_for_approval",
+            output_data={"result": "still_pending"},
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return state
+
+    def apply_patch(self, state: AgentState) -> AgentState:
+        t0 = time.monotonic()
+        self._record_step(
+            state, "apply_patch",
+            output_data={"patch": "stored as proposal, not applied (Phase 3)"},
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return state
+
+    def run_tests(self, state: AgentState) -> AgentState:
+        t0 = time.monotonic()
+        from app.security.command_guard import CommandGuard
+        guard = CommandGuard()
+        for step in state.plan:
+            tests = step.get("suggested_tests", [])
+            if isinstance(tests, str):
+                tests = [tests]
+            for test_cmd_str in tests:
+                cmd_list = test_cmd_str.split()
+                result = guard.check(cmd_list)
+                if result.allowed:
+                    state.command_plan.append({
+                        "command": cmd_list,
+                        "status": "planned",
+                    })
+                else:
+                    state.command_plan.append({
+                        "command": cmd_list,
+                        "status": f"blocked: {result.reason}",
+                    })
+        self._record_step(
+            state, "run_tests",
+            output_data={"commands": state.command_plan},
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return state
+
     def summarize(self, state: AgentState) -> AgentState:
         t0 = time.monotonic()
         prompt = SUMMARIZER_PROMPT.format(
@@ -151,7 +314,12 @@ class _AgentNodeContext:
             logger.exception("Summary generation failed")
             state.final_summary = "Summary generation failed."
             state.errors.append("Summary generation failed")
-        state.status = "completed"
+        if state.status == "waiting_approval":
+            state.status = "waiting_approval"
+        elif state.errors:
+            state.status = "failed"
+        else:
+            state.status = "completed"
         self._record_step(
             state, "summarize",
             output_data={"summary": state.final_summary[:500]},
@@ -197,6 +365,22 @@ def _parse_json(text: str) -> dict | None:
     return None
 
 
+def _mode_routing(state: AgentState) -> str:
+    if state.mode == "plan_only":
+        return "summarize"
+    return "propose_patch"
+
+
+def _approval_routing(state: AgentState) -> str:
+    if state.approval_status == "not_required":
+        return "summarize"
+    if state.approval_status == "approved":
+        return "apply_patch"
+    if state.approval_status == "rejected":
+        return "summarize"
+    return "wait_for_approval"
+
+
 def build_agent_graph(chat_provider, retriever, session_factory):
     ctx = _AgentNodeContext(chat_provider, retriever, session_factory)
 
@@ -205,12 +389,34 @@ def build_agent_graph(chat_provider, retriever, session_factory):
     workflow.add_node("classify_task", ctx.classify_task)
     workflow.add_node("retrieve_context", ctx.retrieve_context)
     workflow.add_node("build_plan", ctx.build_plan)
+    workflow.add_node("propose_patch", ctx.propose_patch)
+    workflow.add_node("request_approval", ctx.request_approval)
+    workflow.add_node("wait_for_approval", ctx.wait_for_approval)
+    workflow.add_node("apply_patch", ctx.apply_patch)
+    workflow.add_node("run_tests", ctx.run_tests)
     workflow.add_node("summarize", ctx.summarize)
 
     workflow.set_entry_point("classify_task")
     workflow.add_edge("classify_task", "retrieve_context")
     workflow.add_edge("retrieve_context", "build_plan")
-    workflow.add_edge("build_plan", "summarize")
+
+    workflow.add_conditional_edges(
+        "build_plan", _mode_routing,
+        {"propose_patch": "propose_patch", "summarize": "summarize"},
+    )
+    workflow.add_edge("propose_patch", "request_approval")
+
+    workflow.add_conditional_edges(
+        "request_approval", _approval_routing,
+        {
+            "wait_for_approval": "wait_for_approval",
+            "apply_patch": "apply_patch",
+            "summarize": "summarize",
+        },
+    )
+    workflow.add_edge("wait_for_approval", END)
+    workflow.add_edge("apply_patch", "run_tests")
+    workflow.add_edge("run_tests", "summarize")
     workflow.add_edge("summarize", END)
 
     return workflow.compile()
