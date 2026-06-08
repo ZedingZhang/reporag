@@ -2,166 +2,192 @@
 
 [English](README.md) | [中文文档](README.zh.md)
 
-面向 GitHub 仓库的 RAG 智能助手，提供基于源码的证据型回答、代码感知检索与可度量的检索质量。
-
-## 开发状态
-
-Phase 1-4 已完成。可用功能：仓库索引、分块、向量化、混合检索、RAG 管线、引用校验、Streamlit 界面、评估框架。Phase 5（打磨、多仓库、高级 reranker）进行中。
+面向 GitHub 仓库的 RAG 智能助手 + 可行动的代码维护 Agent 工作台 — 基于源码的证据型回答、混合检索、LangGraph agent 编排、人工审批、沙箱执行、MCP 工具集成、轨迹评估。
 
 ## 核心特性
 
-- **代码感知分块** — Markdown 按标题层级切分，Python 源码按 AST 函数/类切分，保留行号与 commit SHA
-- **混合检索** — 向量语义检索 + 关键词全文检索，Reciprocal Rank Fusion 合并排序
-- **RAG 管线** — LangGraph 风格工作流：问题分类 → 查询改写 → 混合检索 → 重排序 → 证据检查 → 答案生成 → 引用验证
-- **引用验证** — 每条回答附带 GitHub permalink（含文件路径+行号），自动检测虚构引用
-- **后台索引** — POST 仓库 URL 后通过 FastAPI BackgroundTasks 异步索引
-- **评估框架** — Recall@k、MRR、引用覆盖率、延迟，基于 JSONL 数据集驱动
+### RAG 引擎
+- **代码感知分块** — Markdown 按标题切分，Python 按 AST 函数/类切分，JS/TS 正则 fallback，保留行号和 commit SHA
+- **混合检索** — 向量（pgvector）+ 关键词（PostgreSQL 全文检索），Reciprocal Rank Fusion 融合
+- **引用验证** — 回答带 GitHub permalink（文件路径+行号），自动检测并剔除伪造引用
+- **LangGraph RAG 管线** — 问题分类 → 查询改写 → 混合检索 → 重排序 → 证据检查 → 生成 → 校验
 
-## 一句话定位
-
-RepoRAG 面向开源项目新贡献者，帮助快速理解项目结构、定位相关源码、追踪 issue/PR 背景，并生成带 GitHub permalink 引用的可信回答。
+### Agentic 扩展
+- **LangGraph agent 工作流** — 分类任务 → 检索上下文 → 构建计划 → 生成 patch → 请求审批 → 执行/汇总
+- **人工审批** — 高风险操作（apply_patch、run_command、create_pr）必须显式审批
+- **安全守卫** — CommandGuard（allowlist: pytest/ruff/python；拦截 rm/sudo/curl/ssh + shell 元字符），PathGuard（拦截 .env/.git/credentials + 目录穿越）
+- **安全执行** — `subprocess.run` 无 `shell=True`，60s timeout，stdout/stderr 捕获，ToolExecution 审计日志
+- **Patch 提案** — LLM 生成 unified diff，自动校验 diff 格式合法性
+- **MCP 服务** — 4 个工具（search_code、create_agent_run、get_agent_run、resolve_approval），可接入 Claude Code
+- **Agent 评估** — plan_success、context_hit_rate、approval_accuracy、patch_validity、latency
 
 ## 架构
 
 ```
-用户 → Streamlit UI → FastAPI (BackgroundTasks)
-                         ├── POST /api/repos/index → GitHub 抓取 → 分块 → 向量化 → DB
-                         └── POST /api/chat → 查询改写 → 混合检索 → 重排序 → LLM → 引用
-                              ↑                                                        ↓
-                              └──────── PostgreSQL + pgvector（向量 + 全文检索） ─────────┘
+┌──────────────────────────────────────────────────────┐
+│                   Streamlit UI                        │
+│   Q&A Tab  │  Agent Tab (run, plan, patch, approve)  │
+└──────────┬─────────────────────┬─────────────────────┘
+           │                     │
+     ┌─────▼─────┐        ┌─────▼──────────────────────┐
+     │  /api/chat │        │  /api/agent/runs           │
+     │  RAG Graph │        │  Agent Graph (LangGraph)     │
+     │            │        │                             │
+     │ classify   │        │  classify_task              │
+     │ rewrite    │        │  retrieve_context           │
+     │ retrieve   │        │  build_plan                 │
+     │ rerank     │        │  propose_patch              │
+     │ evidence   │        │  request_approval ◄─human──┐│
+     │ generate   │        │  wait_for_approval         ││
+     │ validate   │        │  apply_patch               ││
+     └─────┬──────┘        │  run_tests (executor)       ││
+           │               │  summarize                  ││
+           │               └─────────────────────────────┘│
+           │                                              │
+     ┌─────▼──────────────────────────────────────────────▼──┐
+     │              PostgreSQL + pgvector                      │
+     │  repositories │ documents │ chunks │ agent_runs         │
+     │  agent_steps  │ approval_requests │ tool_executions    │
+     └────────────────────────────────────────────────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │   RepoRAG MCP Server    │
+           │   (Claude Code tools)   │
+           └─────────────────────────┘
 ```
+
+## Agent Workflow（LangGraph）
+
+```
+classify_task ──► retrieve_context ──► build_plan
+                                          │
+                   plan_only ──► summarize ◄── approved/rejected
+                   propose_patch / execute ──► propose_patch
+                                                  │
+                                            request_approval
+                                                  │
+                              not_required ──► summarize
+                              pending ──► wait_for_approval ──► END
+                              approved ──► apply_patch ──► run_tests ──► summarize
+```
+
+## 安全与审批模型
+
+| 风险等级 | 示例 | 需要审批 |
+|----------|------|----------|
+| Low | 只读检索、查看 repo 列表 | 否 |
+| Medium | pytest、ruff check | 是（execute 模式下） |
+| High | apply patch、rm、curl、git push、create PR | 是 |
+
+**CommandGuard 拦截**：`rm`、`sudo`、`curl`、`wget`、`ssh`、`nc`、`chmod`、`chown`、`git push`、`git reset --hard`、shell 元字符（`|`、`;`、`&&`、`$()`、`` ` ``、`>`、`<`）
+
+**PathGuard 拦截**：`.env`、`.git/`、credentials 文件、目录穿越（`..`）
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
 | 后端 | Python 3.11+, FastAPI |
-| RAG 管线 | LangChain（providers）, LangGraph 模式 |
-| 数据库 | PostgreSQL + pgvector |
-| 前端 | Streamlit |
-| 大模型 | DeepSeek V4（OpenAI-compatible），可替换 |
-| Embedding | OpenAI-compatible provider，可替换 |
-| 开发工具 | pytest（36 个测试）, ruff, Alembic |
+| RAG/Agent | LangChain（langchain-openai, langchain-core）, LangGraph |
+| 数据库 | PostgreSQL + pgvector（+ 全文检索） |
+| 前端 | Streamlit（Q&A + Agent 双 tab） |
+| 大模型 | DeepSeek V4（OpenAI-compatible，可替换） |
+| Embedding | OpenAI-compatible provider（可替换） |
+| MCP | FastMCP（Python >=3.10） |
+| 开发工具 | pytest（114 tests）, ruff, Alembic |
 
 ## 快速开始
 
-### 环境要求
-
-- Docker 与 Docker Compose
-- DeepSeek API Key（或任意 OpenAI-compatible API）
-- GitHub Token（可选，将 API 频率限制从 60 提升至 5000 次/小时）
-
-### 启动
-
 ```bash
-git clone https://github.com/nebula167/reporag.git
+git clone https://github.com/ZedingZhang/reporag.git
 cd reporag
-
-cp .env.example .env
-# 编辑 .env 填入 API Key
-
-docker compose up --build
+cp .env.example .env           # 填入 API Key
+docker compose up --build       # 自动执行 migration
 ```
-
-容器启动时自动执行数据库 migration。
 
 - FastAPI 文档：http://localhost:8000/docs
 - Streamlit 界面：http://localhost:8501
 
-### 索引仓库
-
-通过 API：
-```bash
-curl -X POST http://localhost:8000/api/repos/index \
-  -H "Content-Type: application/json" \
-  -d '{"repo_url":"https://github.com/pallets/click"}'
-```
-
-或命令行：
-```bash
-python scripts/ingest_repo.py --repo https://github.com/pallets/click
-```
-
-### 提问
-
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"repo_id":"<repo_id>","question":"命令解析在哪里实现的？","top_k":8}'
-```
-
-返回包含 `answer`、`citations`（含 GitHub permalink 和行号）、`retrieved_chunks`、`confidence`。
-
-## 环境变量
-
-详见 `.env.example`，关键变量：
-
-| 变量 | 说明 |
-|------|------|
-| `DATABASE_URL` | PostgreSQL 连接串 |
-| `GITHUB_TOKEN` | GitHub 个人访问令牌（可选，提升频率限制） |
-| `LLM_PROVIDER` | LLM 提供商（`deepseek` 或 `openai_compatible`） |
-| `DEEPSEEK_API_KEY` | Chat 模型 API Key |
-| `DEEPSEEK_BASE_URL` | Chat 模型 API 地址 |
-| `DEEPSEEK_MODEL` | 模型名称（如 `deepseek-v4-pro`） |
-| `DEEPSEEK_REASONING_EFFORT` | 可选 reasoning effort；仅在 endpoint 支持时填写 |
-| `EMBEDDING_PROVIDER` | Embedding 提供商 |
-| `EMBEDDING_API_KEY` | Embedding API Key |
-| `EMBEDDING_MODEL` | Embedding 模型名称 |
-| `EMBEDDING_DIMENSIONS` | 向量维度（必须与模型输出一致） |
-
-初始 migration 创建的是 1536 维 pgvector 列。如果更换为其他输出维度的
-embedding 模型，需要先新增 migration 调整向量列维度，再重新索引仓库。
-
 ## API
 
+### RAG 端点
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/repos/index` | 索引 GitHub 仓库（异步后台任务） |
-| `POST` | `/api/chat` | 提问，返回带引用的回答 |
-| `GET` | `/api/repos` | 列出所有已索引仓库 |
-| `GET` | `/api/repos/{id}/status` | 查询仓库索引状态 |
+| POST | `/api/repos/index` | 索引 GitHub 仓库（异步后台） |
+| POST | `/api/chat` | 提问，返回带引用回答 |
+| GET | `/api/repos` | 列出已索引仓库 |
+| GET | `/api/repos/{id}/status` | 查询索引状态 |
+
+### Agent 端点
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/agent/runs` | 创建 agent run |
+| GET | `/api/agent/runs/{id}` | 查看 run（plan、patch、审批、steps） |
+| GET | `/api/agent/runs/{id}/steps` | 列出 run steps |
+| POST | `/api/agent/runs/{id}/continue` | 审批后恢复执行 |
+| POST | `/api/agent/runs/{id}/cancel` | 取消 run |
+| POST | `/api/agent/approvals/{aid}/resolve` | 审批通过/驳回 |
+
+## MCP 集成
+
+```bash
+cp .mcp.example.json ~/.claude/mcp.json  # 填入 API Key
+```
+
+Claude Code 可调用：`search_code`、`create_agent_run`、`get_agent_run`、`resolve_approval`
 
 ## 评估
 
+### RAG 评估
 ```bash
 python scripts/evaluate.py --dataset examples/eval_dataset.jsonl
 ```
+指标：Recall@5、MRR、引用覆盖率、延迟。
 
-对已索引仓库运行评估。指标：Recall@5、MRR、引用覆盖率、平均延迟。
-
-数据集 `examples/eval_dataset.jsonl` 包含针对真实公开仓库的问题，运行前需先索引对应仓库。
+### Agent 评估
+```bash
+python scripts/evaluate_agent.py --dataset examples/agent_tasks.jsonl
+```
+指标：plan_success、context_hit_rate、approval_accuracy、patch_validity、avg_latency。
 
 ## 项目结构
 
 ```
 app/
-  core/          配置、日志、Provider Adapter（LLM + Embedding）
-  db/            SQLAlchemy 模型、会话、Alembic migration
-  github/        GitHub REST API 客户端、URL 解析
+  core/          配置、日志、Provider Adapter（ChatOpenAI, OpenAIEmbeddings）
+  db/            SQLAlchemy 模型（7 张表）、Alembic migration
+  github/        GitHub REST API 客户端
   ingestion/     切片器（Markdown、Python AST、JS/TS）、Embedding 客户端
-  retrieval/     向量检索、关键词检索、混合融合、Reranker 接口
-  rag/           LangGraph 风格管线、Prompt、引用校验
-  api/           FastAPI 路由、Pydantic Schema
-streamlit_app/   Streamlit 界面
-scripts/         ingest_repo.py、evaluate.py
-tests/           36 个 pytest 测试
+  retrieval/     向量检索、关键词检索、混合融合、Reranker
+  rag/           LangGraph RAG 管线、Prompt、引用校验
+  agent/         LangGraph agent 工作流、State、Prompt、Service
+  tools/         repo_context、patch、executor
+  security/      CommandGuard、PathGuard、ApprovalPolicy、ApprovalManager
+  mcp/           FastMCP server（Claude Code 接入）
+  api/           FastAPI 路由（RAG + Agent）
+streamlit_app/   Q&A tab + Agent tab
+scripts/         ingest_repo、evaluate、evaluate_agent
+tests/           114 个 pytest 测试
 ```
 
 ## 简历亮点
 
-> 独立完成 RepoRAG，一个面向 GitHub 仓库的 RAG 助手。实现了代码感知切片、混合检索+RRF 融合、引用校验、LangGraph 风格 RAG 管线编排，以及包含 Recall@k、MRR、引用覆盖率、延迟的离线评估体系。
+> 独立完成 RepoRAG，一个面向 GitHub 仓库的 RAG 助手 + agentic 代码维护工作台。实现了代码感知切片、混合检索+RRF 融合、引用校验、LangGraph RAG 管线，并扩展了 LangGraph agent 编排、MCP 工具集成、人工审批、沙箱命令执行、轨迹评估等多维度 agent 工程能力。
+
+> 设计了安全的 agent 工具层：schema-validated tools、PathGuard/CommandGuard、高风险操作审批门禁、eval 指标覆盖 context hit rate、patch validity、unsafe-command blocking、latency、tool-call count。
 
 ## Roadmap
 
 - [x] 代码感知分块（Markdown、Python AST、JS/TS）
 - [x] 混合检索 + RRF 融合
 - [x] 引用校验 + GitHub permalink
-- [x] 后台异步索引 API
-- [x] RAG 管线（改写 → 检索 → 重排 → 生成 → 校验）
-- [x] Streamlit 界面接入 API
-- [x] 评估框架接入真实检索器
-- [ ] Cross-encoder 重排序（当前使用 identity reranker）
+- [x] 后台异步索引
+- [x] LangGraph RAG 管线
+- [x] Agent graph（分类 → 计划 → patch → 审批 → 执行）
+- [x] 审批系统 + 安全守卫
+- [x] 安全命令执行
+- [x] MCP server 接入 Claude Code
+- [x] Agent 评估框架
+- [ ] Cross-encoder 重排序
 - [ ] 多仓库交叉检索
-- [ ] Webhook 增量索引
 - [ ] Next.js + shadcn/ui 前端
