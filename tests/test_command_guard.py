@@ -87,3 +87,51 @@ class TestCommandGuard:
     def test_blocks_unknown_command(self) -> None:
         result = self.guard.check(["unknown_cmd", "arg"])
         assert not result.allowed
+
+    def test_blocks_python_dash_c(self) -> None:
+        assert not self.guard.check(["python3", "-c", "import os"]).allowed
+
+    def test_blocks_python_m_pip(self) -> None:
+        assert not self.guard.check(
+            ["python3", "-m", "pip", "install", "requests"],
+        ).allowed
+
+    def test_blocks_python_m_pip_variant(self) -> None:
+        assert not self.guard.check(
+            ["python", "-m", "pip", "install", "requests"],
+        ).allowed
+
+    def test_blocks_executable_path(self) -> None:
+        assert not self.guard.check(
+            ["/tmp/python3", "-m", "pytest"],
+        ).allowed
+
+    def test_blocks_executable_backslash(self) -> None:
+        assert not self.guard.check(
+            [".\\python3", "-m", "pytest"],
+        ).allowed
+
+    def test_allows_python_m_pytest_file(self) -> None:
+        assert self.guard.check(
+            ["python3", "-m", "pytest", "tests/test_citations.py"],
+        ).allowed
+
+    def test_allows_python_m_pytest_flags(self) -> None:
+        assert self.guard.check(
+            ["python3", "-m", "pytest", "-q", "--tb=short"],
+        ).allowed
+
+    def test_allows_ruff_check(self) -> None:
+        assert self.guard.check(["ruff", "check"]).allowed
+
+    def test_blocks_bash(self) -> None:
+        assert not self.guard.check(["bash", "script.sh"]).allowed
+
+    def test_blocks_sh(self) -> None:
+        assert not self.guard.check(["sh", "script.sh"]).allowed
+
+    def test_blocks_pip_direct(self) -> None:
+        assert not self.guard.check(["pip", "install", "requests"]).allowed
+
+    def test_blocks_git(self) -> None:
+        assert not self.guard.check(["git", "status"]).allowed

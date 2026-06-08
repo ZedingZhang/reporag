@@ -39,6 +39,15 @@ class AgentStepResponse(BaseModel):
     output: dict | None = None
 
 
+class ApprovalResponse(BaseModel):
+    approval_id: str
+    action_type: str
+    summary: str
+    risk_level: str
+    status: str
+    review_comment: str | None = None
+
+
 class AgentRunResponse(BaseModel):
     run_id: str
     repo_id: str | None = None
@@ -50,7 +59,8 @@ class AgentRunResponse(BaseModel):
     error: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
-    steps: list[AgentStepResponse] = []
+    steps: list[AgentStepResponse] = Field(default_factory=list)
+    approvals: list[ApprovalResponse] = Field(default_factory=list)
 
 
 class CancelRunResponse(BaseModel):
@@ -79,12 +89,14 @@ async def create_agent_run(request: CreateAgentRunRequest) -> CreateAgentRunResp
         retriever = HybridRetriever(session, ec)
         svc = AgentService(session, chat, retriever)
 
-        run_id = svc.create_run(
+        run_info = svc.create_run(
             repo_id=request.repo_id, task=request.task,
             mode=request.mode, top_k=request.top_k,
         )
 
-        return CreateAgentRunResponse(run_id=run_id, status="running")
+        return CreateAgentRunResponse(
+            run_id=run_info["run_id"], status=run_info["status"],
+        )
     except HTTPException:
         raise
     except Exception as e:
