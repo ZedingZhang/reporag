@@ -159,6 +159,48 @@ class AgentService:
             "review_comment": approval.review_comment,
         }
 
+    def continue_after_approval(self, run_id: str) -> dict | None:
+        run = self._session.query(AgentRun).filter(AgentRun.id == run_id).first()
+        if not run or run.status != "running":
+            st = run.status if run else "unknown"
+            return {"error": "Run not in resumable state", "status": st}
+
+        graph = build_agent_graph(self._chat, self._retriever, self._mk_session)
+
+        approvals = (
+            self._session.query(ApprovalRequest)
+            .filter(ApprovalRequest.run_id == run_id, ApprovalRequest.status == "approved")
+            .order_by(ApprovalRequest.created_at.desc())
+            .all()
+        )
+
+        approval_status = "approved" if approvals else "not_required"
+        state = AgentState(
+            run_id=run_id, repo_id=run.repo_id or "", task=run.task,
+            mode=run.mode,
+            task_type=run.plan_json.get("task_type", "") if run.plan_json else "",
+            plan=run.plan_json.get("plan", []) if run.plan_json else [],
+            approval_status=approval_status,
+        )
+
+        try:
+            result = graph.invoke(state)
+            run.status = result["status"]
+            run.result_json = {
+                **(run.result_json or {}),
+                "final_summary": result["final_summary"],
+                "command_plan": result["command_plan"],
+                "command_results": result["command_results"],
+            }
+            run.updated_at = datetime.now(timezone.utc)
+        except Exception as e:
+            run.status = "failed"
+            run.error = str(e)
+            logger.exception("Agent run %s continuation failed", run.id)
+
+        self._session.commit()
+        return self.get_run(run_id)
+
     def cancel_run(self, run_id: str) -> bool:
         run = self._session.query(AgentRun).filter(AgentRun.id == run_id).first()
         if not run or run.status not in ("created", "running", "waiting_approval"):
