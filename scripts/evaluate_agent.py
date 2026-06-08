@@ -71,7 +71,7 @@ def _eval_one_smoke(item: dict) -> dict:
     return _compute_metrics(item, result, elapsed)
 
 
-def _eval_one_live(item: dict, repo_id: str, chat, retriever, session) -> dict:
+def _eval_one_live(item: dict, repo_id: str, chat, retriever) -> dict:
     t0 = time.monotonic()
     from app.agent.graph import build_agent_graph
     from app.agent.state import AgentState
@@ -185,7 +185,7 @@ def main() -> None:
         logger.info("[%d/%d] %s (mode=%s)", i + 1, len(items), item["id"], args.mode)
         try:
             if args.mode == "live":
-                detail = _eval_one_live(item, args.repo_id, chat, retriever, session)
+                detail = _eval_one_live(item, args.repo_id, chat, retriever)
             else:
                 detail = _eval_one_smoke(item)
             details.append(detail)
