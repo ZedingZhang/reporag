@@ -76,4 +76,9 @@ class PathGuard:
         resolved, err = self._resolve_under_root(path)
         if err:
             return PathCheckResult(False, reason=err)
+
+        forbidden = self._check_forbidden_parts(resolved)
+        if forbidden:
+            return PathCheckResult(False, reason=forbidden)
+
         return PathCheckResult(True)
