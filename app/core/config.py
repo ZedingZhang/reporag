@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
 
+    agent_workspace_root: str = ""
+    agent_apply_patches: bool = False
+
     langsmith_tracing: bool = False
     langsmith_api_key: str = ""
     langsmith_project: str = "reporag"
