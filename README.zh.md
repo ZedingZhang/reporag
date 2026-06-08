@@ -94,7 +94,7 @@ classify_task ──► retrieve_context ──► build_plan
 | 大模型 | DeepSeek V4（OpenAI-compatible，可替换） |
 | Embedding | OpenAI-compatible provider（可替换） |
 | MCP | FastMCP（Python >=3.10） |
-| 开发工具 | pytest（114 tests）, ruff, Alembic |
+| 开发工具 | pytest（152 tests）, ruff, Alembic |
 
 ## 快速开始
 
@@ -174,7 +174,7 @@ app/
   api/           FastAPI 路由（RAG + Agent）
 streamlit_app/   Q&A tab + Agent tab
 scripts/         ingest_repo、evaluate、evaluate_agent
-tests/           114 个 pytest 测试
+tests/           152 个 pytest 测试
 ```
 
 ## 简历亮点
