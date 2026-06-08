@@ -5,6 +5,7 @@ from dataclasses import dataclass
 ALLOWED_COMMANDS = {
     "pytest",
     "python",
+    "python3",
     "ruff",
 }
 
@@ -71,7 +72,7 @@ class CommandGuard:
                     blocked_by=blocked_sub,
                 )
 
-        if executable == "python":
+        if executable in ("python", "python3"):
             if len(command) < 2:
                 return CommandCheckResult(False, reason="python needs subcommand")
             sub = command[1]
@@ -86,7 +87,7 @@ class CommandGuard:
                         False, reason=f"python -m {module} not allowed",
                     )
 
-        if executable not in ALLOWED_COMMANDS and executable not in ("python",):
+        if executable not in ALLOWED_COMMANDS and executable not in ("python", "python3"):
             return CommandCheckResult(
                 False, reason=f"Command not in allowlist: {executable}",
             )
