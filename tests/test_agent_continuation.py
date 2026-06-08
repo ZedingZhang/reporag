@@ -31,7 +31,8 @@ class TestContinuationDoesNotRerunPlanning:
             suggested_tests=["pytest tests/"],
         )
         nodes = _get_continuation_nodes(state)
-        assert "run_tests" in nodes
+        assert "apply_patch" in nodes
+        assert "run_tests" not in nodes
         assert "classify_task" not in nodes
 
 
@@ -69,11 +70,9 @@ class TestSuggestedTestsPersisted:
 
 def _get_continuation_nodes(state: AgentState) -> set[str]:
     nodes: set[str] = set()
-    if state.approval_status == "approved" and state.suggested_tests:
+    if state.approval_status == "approved":
         nodes.add("apply_patch")
-        if state.mode in ("execute_after_approval",):
-            nodes.add("run_tests")
-        elif state.mode == "propose_patch":
+        if state.mode == "execute_after_approval":
             nodes.add("run_tests")
         nodes.add("summarize")
     return nodes

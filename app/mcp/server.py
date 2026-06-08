@@ -69,8 +69,8 @@ def create_agent_run_tool(repo_id: str, task: str, mode: str = "plan_only") -> s
     session = _get_session()
     try:
         svc = _get_agent_svc(session)
-        run_id = svc.create_run(repo_id=repo_id, task=task, mode=mode)
-        return json.dumps({"run_id": run_id, "status": "created"}, indent=2)
+        info = svc.create_run(repo_id=repo_id, task=task, mode=mode)
+        return json.dumps(info, indent=2)
     finally:
         session.close()
 
