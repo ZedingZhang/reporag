@@ -30,6 +30,50 @@ def _get_vector_dim() -> int | None:
         return None
 
 
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    repo_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("repositories.id", ondelete="SET NULL"), nullable=True,
+    )
+    task: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(50), default="plan_only")
+    status: Mapped[str] = mapped_column(String(50), default="created")
+    plan_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    result_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+    )
+
+    steps: Mapped[list[AgentStep]] = relationship(back_populates="run", lazy="raise")
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False,
+    )
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    node_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    input_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    output_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="running")
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="steps")
+
+
 class Repository(Base):
     __tablename__ = "repositories"
 

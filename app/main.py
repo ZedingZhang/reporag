@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.agent_routes import router as agent_router
 from app.api.routes import router as api_router
 from app.core.logging import setup_logging
 
@@ -17,8 +18,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RepoRAG",
     description="RAG assistant for understanding GitHub repositories",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
 app.include_router(api_router, prefix="/api")
+app.include_router(agent_router, prefix="/api")
