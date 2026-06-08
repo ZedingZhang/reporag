@@ -276,11 +276,24 @@ class _AgentNodeContext:
         )
         return state
 
-    def apply_patch(self, state: AgentState) -> AgentState:
+    def apply_patch(
+        self, state: AgentState,
+        patch_status: str = "stored_only",
+        patch_note: str = "",
+    ) -> AgentState:
         t0 = time.monotonic()
+        output: dict = {"status": patch_status}
+        if patch_note:
+            output["note"] = patch_note
+        if patch_status == "applied":
+            output["summary"] = "Patch applied to workspace via git apply."
+        elif patch_status in ("check_failed", "apply_failed", "path_blocked"):
+            output["summary"] = f"Patch apply failed: {patch_status}"
+        else:
+            output["summary"] = "Patch stored as proposal, not auto-applied."
         self._record_step(
             state, "apply_patch",
-            output_data={"patch": "stored as proposal, not applied (Phase 3)"},
+            output_data=output,
             latency_ms=int((time.monotonic() - t0) * 1000),
         )
         return state
