@@ -292,7 +292,10 @@ class AgentService:
                 )
                 ctx.summarize(state)
             else:
-                ctx.apply_patch(state)
+                ctx.apply_patch(
+                    state,
+                    patch_status=result_data.get("patch_apply_status", "applied"),
+                )
                 ctx.run_tests(state)
                 ctx.summarize(state)
                 result_data["command_results"] = [
