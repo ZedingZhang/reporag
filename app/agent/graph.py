@@ -178,9 +178,22 @@ class _AgentNodeContext:
         except Exception:
             logger.exception("Patch proposal failed")
             state.errors.append("Patch proposal failed")
+
+        from app.tools.patch import summarize_patch, validate_unified_diff
+        validation = validate_unified_diff(state.proposed_patch)
+        summary = summarize_patch(state.proposed_patch)
+
         self._record_step(
             state, "propose_patch",
-            output_data={"patch_len": len(state.proposed_patch)},
+            output_data={
+                "patch_len": len(state.proposed_patch),
+                "valid": validation.valid,
+                "validation_reason": validation.reason,
+                "files": summary.files,
+                "added_lines": summary.added_lines,
+                "removed_lines": summary.removed_lines,
+                "is_no_patch": summary.is_no_patch,
+            },
             latency_ms=int((time.monotonic() - t0) * 1000),
         )
         return state
