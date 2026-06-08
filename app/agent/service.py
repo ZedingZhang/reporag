@@ -220,6 +220,7 @@ class AgentService:
         result_data: dict,
     ) -> None:
         from app.agent.graph import _AgentNodeContext
+        from app.core.config import settings
 
         ctx = _AgentNodeContext(self._chat, self._retriever, self._mk_session)
 
@@ -231,13 +232,29 @@ class AgentService:
             for a in approved
         )
 
-        if has_apply and state.proposed_patch:
-            result_data["patch_apply_status"] = "stored_only"
-            result_data["patch_apply_note"] = (
-                "Patch proposal approved but not applied: "
-                "no workspace root configured. Set AGENT_WORKSPACE_ROOT "
-                "and AGENT_APPLY_PATCHES=true to enable."
+        workspace = settings.agent_workspace_root
+        allow_apply = settings.agent_apply_patches
+
+        if has_apply and state.proposed_patch and allow_apply and workspace:
+            from app.tools.patch import apply_patch_to_workspace
+            apply_result = apply_patch_to_workspace(
+                state.proposed_patch, workspace,
             )
+            result_data["patch_apply_status"] = apply_result.status
+            result_data["patch_apply_files"] = apply_result.files
+            if not apply_result.success:
+                result_data["patch_apply_error"] = apply_result.error
+        elif has_apply and state.proposed_patch:
+            result_data["patch_apply_status"] = "stored_only"
+            if not workspace:
+                result_data["patch_apply_note"] = (
+                    "Patch approved but not applied: AGENT_WORKSPACE_ROOT not set. "
+                    "Set AGENT_WORKSPACE_ROOT and AGENT_APPLY_PATCHES=true."
+                )
+            elif not allow_apply:
+                result_data["patch_apply_note"] = (
+                    "Patch approved but not applied: AGENT_APPLY_PATCHES is false."
+                )
 
         if state.mode in ("propose_patch",):
             state.status = "completed"
