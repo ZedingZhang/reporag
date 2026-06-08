@@ -122,6 +122,41 @@ async def list_agent_steps(run_id: str) -> list[AgentStepResponse]:
         session.close()
 
 
+class ResolveApprovalRequest(BaseModel):
+    decision: str = Field(..., pattern=r"^(approved|rejected)$")
+    comment: str = ""
+
+
+class ResolveApprovalResponse(BaseModel):
+    approval_id: str
+    run_id: str
+    status: str
+    review_comment: str | None = None
+
+
+@router.post("/approvals/{approval_id}/resolve", response_model=ResolveApprovalResponse)
+async def resolve_approval(
+    approval_id: str, request: ResolveApprovalRequest,
+) -> ResolveApprovalResponse:
+    session = get_sync_session()
+    try:
+        from app.agent.service import AgentService
+        svc = AgentService(session)
+        result = svc.resolve_approval(
+            approval_id, request.decision, request.comment,
+        )
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="Approval not found or already resolved",
+            )
+        return ResolveApprovalResponse(**result)
+    except HTTPException:
+        raise
+    finally:
+        session.close()
+
+
 @router.post("/runs/{run_id}/cancel", response_model=CancelRunResponse)
 async def cancel_agent_run(run_id: str) -> CancelRunResponse:
     session = get_sync_session()
