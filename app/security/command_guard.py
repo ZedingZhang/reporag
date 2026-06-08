@@ -2,31 +2,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-ALLOWED_COMMANDS = {
-    "pytest",
-    "python",
-    "python3",
-    "ruff",
+ALLOWED_PREFIXES: list[tuple[str, ...]] = [
+    ("pytest",),
+    ("python", "-m", "pytest"),
+    ("python3", "-m", "pytest"),
+    ("ruff", "check"),
+    ("ruff", "format", "--check"),
+    ("python", "-m", "ruff", "check"),
+    ("python3", "-m", "ruff", "check"),
+    ("python", "-m", "ruff", "format", "--check"),
+    ("python3", "-m", "ruff", "format", "--check"),
+]
+
+BLOCKED_EXECUTABLES = {
+    "rm", "sudo", "curl", "wget", "nc", "ssh", "chmod", "chown",
+    "git", "npm", "pip", "uv", "poetry", "bash", "sh", "zsh",
+    "make", "cmake", "gcc", "g++", "docker", "kubectl", "systemctl",
 }
 
-BLOCKED_COMMANDS = {
-    "rm",
-    "sudo",
-    "curl",
-    "wget",
-    "nc",
-    "ssh",
-    "chmod",
-    "chown",
-}
+BLOCKED_SUBCOMMANDS = [
+    "git push", "git reset --hard", "git push --force",
+    "pip install", "npm install",
+]
 
-BLOCKED_SUBCOMMANDS = {
-    "git push",
-    "git reset --hard",
-    "git push --force",
-}
+SHELL_METACHARACTERS = {"`", "$(", "${", "|", ";", "&&", "||", ">", "<", "&", "\n"}
 
-SHELL_METACHARACTERS = {"`", "$(", "${", "|", ";", "&&", "||", ">", "<"}
+
+def _starts_with(command: list[str], prefix: tuple[str, ...]) -> bool:
+    return len(command) >= len(prefix) and tuple(command[:len(prefix)]) == prefix
 
 
 @dataclass
@@ -37,18 +40,31 @@ class CommandCheckResult:
 
 
 class CommandGuard:
-    def check(self, command: list[str]) -> CommandCheckResult:
+    def check(self, command: list[str] | str) -> CommandCheckResult:
+        # 1. Must be non-empty list
         if not command:
             return CommandCheckResult(False, reason="Empty command")
-
         if isinstance(command, str):
             return CommandCheckResult(
                 False, reason="Command must be a list, not a string",
             )
-
+        # 2. All elements must be non-empty strings
+        for i, arg in enumerate(command):
+            if not isinstance(arg, str) or not arg:
+                return CommandCheckResult(
+                    False,
+                    reason=f"Argument {i} is empty or not a string",
+                )
+        # 3. executable must not contain / or \
+        executable = command[0]
+        if "/" in executable or "\\" in executable:
+            return CommandCheckResult(
+                False,
+                reason=f"Executable path with / or \\ not allowed: {executable}",
+                blocked_by=executable,
+            )
+        # 4. No argument may contain shell metacharacters
         cmd_str = " ".join(command)
-        executable = command[0].split("/")[-1]
-
         for meta in SHELL_METACHARACTERS:
             if meta in cmd_str:
                 return CommandCheckResult(
@@ -56,14 +72,14 @@ class CommandGuard:
                     reason=f"Shell metacharacter blocked: {meta}",
                     blocked_by=meta,
                 )
-
-        if executable in BLOCKED_COMMANDS:
+        # 5. Check blocked executables
+        if executable in BLOCKED_EXECUTABLES:
             return CommandCheckResult(
                 False,
                 reason=f"Blocked command: {executable}",
                 blocked_by=executable,
             )
-
+        # 6. Check blocked subcommands
         for blocked_sub in BLOCKED_SUBCOMMANDS:
             if blocked_sub in cmd_str:
                 return CommandCheckResult(
@@ -71,25 +87,11 @@ class CommandGuard:
                     reason=f"Blocked subcommand: {blocked_sub}",
                     blocked_by=blocked_sub,
                 )
-
-        if executable in ("python", "python3"):
-            if len(command) < 2:
-                return CommandCheckResult(False, reason="python needs subcommand")
-            sub = command[1]
-            if sub not in ("-m", "-c"):
-                return CommandCheckResult(False, reason=f"python {sub} not allowed")
-            if sub == "-m":
-                if len(command) < 3:
-                    return CommandCheckResult(False, reason="python -m needs module")
-                module = command[2]
-                if module not in ("pytest", "ruff", "pip"):
-                    return CommandCheckResult(
-                        False, reason=f"python -m {module} not allowed",
-                    )
-
-        if executable not in ALLOWED_COMMANDS and executable not in ("python", "python3"):
-            return CommandCheckResult(
-                False, reason=f"Command not in allowlist: {executable}",
-            )
-
-        return CommandCheckResult(True)
+        # 7. Must match an allowed prefix
+        for prefix in ALLOWED_PREFIXES:
+            if _starts_with(command, prefix):
+                return CommandCheckResult(True)
+        return CommandCheckResult(
+            False,
+            reason=f"Command prefix not in allowlist: {command[:3]}",
+        )

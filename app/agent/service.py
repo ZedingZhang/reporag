@@ -38,6 +38,7 @@ class AgentService:
             run.plan_json = {
                 "task_type": result["task_type"],
                 "plan": result["plan"],
+                "suggested_tests": result["suggested_tests"],
                 "errors": result["errors"],
             }
             run.result_json = {
@@ -55,7 +56,7 @@ class AgentService:
             logger.exception("Agent run %s failed", run.id)
 
         self._session.commit()
-        return run.id
+        return {"run_id": run.id, "status": run.status}
 
     def get_run(self, run_id: str) -> dict | None:
         run = self._session.query(AgentRun).filter(AgentRun.id == run_id).first()
@@ -161,45 +162,113 @@ class AgentService:
 
     def continue_after_approval(self, run_id: str) -> dict | None:
         run = self._session.query(AgentRun).filter(AgentRun.id == run_id).first()
-        if not run or run.status != "running":
-            st = run.status if run else "unknown"
-            return {"error": "Run not in resumable state", "status": st}
-
-        graph = build_agent_graph(self._chat, self._retriever, self._mk_session)
+        if not run:
+            return None
 
         approvals = (
             self._session.query(ApprovalRequest)
-            .filter(ApprovalRequest.run_id == run_id, ApprovalRequest.status == "approved")
-            .order_by(ApprovalRequest.created_at.desc())
+            .filter(ApprovalRequest.run_id == run_id)
+            .order_by(ApprovalRequest.created_at)
             .all()
         )
 
-        approval_status = "approved" if approvals else "not_required"
+        pending = [a for a in approvals if a.status == "pending"]
+        if pending:
+            return {
+                "error": "Run still has pending approvals",
+                "status": run.status,
+            }
+
+        approved = [a for a in approvals if a.status == "approved"]
+        rejected = [a for a in approvals if a.status == "rejected"]
+        if rejected and not approved:
+            run.status = "failed"
+            run.error = "All approvals were rejected"
+            run.updated_at = datetime.now(timezone.utc)
+            self._session.commit()
+            return self.get_run(run_id)
+
+        plan_data = run.plan_json or {}
+        result_data = run.result_json or {}
+
+        latest = approved[-1] if approved else None
         state = AgentState(
-            run_id=run_id, repo_id=run.repo_id or "", task=run.task,
+            run_id=run.id,
+            repo_id=run.repo_id or "",
+            task=run.task,
             mode=run.mode,
-            task_type=run.plan_json.get("task_type", "") if run.plan_json else "",
-            plan=run.plan_json.get("plan", []) if run.plan_json else [],
-            approval_status=approval_status,
+            task_type=plan_data.get("task_type", ""),
+            plan=plan_data.get("plan", []),
+            suggested_tests=plan_data.get("suggested_tests", []),
+            proposed_patch=(
+                (latest.payload_json or {}).get("patch")
+                if latest and latest.payload_json else result_data.get("proposed_patch", "")
+            ),
+            approval_id=latest.id if latest else None,
+            approval_status="approved" if approved else "not_required",
         )
 
-        try:
-            result = graph.invoke(state)
-            run.status = result["status"]
-            run.result_json = {
-                **(run.result_json or {}),
-                "final_summary": result["final_summary"],
-                "command_plan": result["command_plan"],
-                "command_results": result["command_results"],
-            }
-            run.updated_at = datetime.now(timezone.utc)
-        except Exception as e:
-            run.status = "failed"
-            run.error = str(e)
-            logger.exception("Agent run %s continuation failed", run.id)
-
+        self._execute_approved_actions(run, state, approved, result_data)
         self._session.commit()
         return self.get_run(run_id)
+
+    def _execute_approved_actions(
+        self,
+        run: AgentRun,
+        state: AgentState,
+        approved: list[ApprovalRequest],
+        result_data: dict,
+    ) -> None:
+        from app.agent.graph import _AgentNodeContext
+
+        ctx = _AgentNodeContext(self._chat, self._retriever, self._mk_session)
+
+        result_data["patch_apply_status"] = "skipped_no_workspace"
+        result_data["command_results"] = list(result_data.get("command_results", []))
+
+        has_apply = any(
+            a.action_type in ("apply_patch", "execute_plan", "approve_patch_proposal")
+            for a in approved
+        )
+
+        if has_apply and state.proposed_patch:
+            result_data["patch_apply_status"] = "stored_only"
+            result_data["patch_apply_note"] = (
+                "Patch proposal approved but not applied: "
+                "no workspace root configured. Set AGENT_WORKSPACE_ROOT "
+                "and AGENT_APPLY_PATCHES=true to enable."
+            )
+
+        if state.mode in ("propose_patch",):
+            state.status = "completed"
+            state.final_summary = (
+                "Patch proposal approved. No commands executed per mode policy."
+            )
+            ctx._record_step(
+                state, "apply_patch",
+                output_data={"status": result_data["patch_apply_status"]},
+            )
+            ctx.summarize(state)
+
+            if has_apply:
+                ctx._record_step(
+                    state, "run_tests",
+                    output_data={
+                        "status": "skipped (propose_patch mode, tests not executed)",
+                    },
+                )
+        elif state.mode == "execute_after_approval":
+            ctx.apply_patch(state)
+            ctx.run_tests(state)
+            ctx.summarize(state)
+            result_data["command_results"] = [
+                {"command": c.get("command"), "status": c.get("status")}
+                for c in state.command_results
+            ]
+
+        run.result_json = {**result_data}
+        run.status = state.status
+        run.updated_at = datetime.now(timezone.utc)
 
     def cancel_run(self, run_id: str) -> bool:
         run = self._session.query(AgentRun).filter(AgentRun.id == run_id).first()
