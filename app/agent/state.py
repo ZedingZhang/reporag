@@ -18,6 +18,7 @@ class AgentState:
     retrieved_context: list[dict] = field(default_factory=list)
     target_files: list[str] = field(default_factory=list)
 
+    suggested_tests: list[str] = field(default_factory=list)
     proposed_patch: str = ""
     approval_id: Optional[str] = None
     approval_status: Optional[str] = None

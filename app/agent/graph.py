@@ -130,9 +130,11 @@ class _AgentNodeContext:
                     "risk_level": "low",
                     "requires_approval": False,
                 }]
+                state.suggested_tests = []
             else:
                 state.task_type = plan.get("task_type", state.task_type)
                 state.plan = plan.get("steps", [plan])
+                state.suggested_tests = plan.get("suggested_tests", [])
         except Exception:
             logger.exception("Plan generation failed")
             state.plan = [{
@@ -142,6 +144,7 @@ class _AgentNodeContext:
                 "risk_level": "low",
                 "requires_approval": False,
             }]
+            state.suggested_tests = []
             state.errors.append("Plan generation failed")
         self._record_step(
             state, "build_plan",
@@ -284,49 +287,67 @@ class _AgentNodeContext:
 
     def run_tests(self, state: AgentState) -> AgentState:
         t0 = time.monotonic()
+        import shlex
+
         from app.db.models import ToolExecution
         from app.tools.executor import run_safe_command
 
+        test_candidates: list[str] = list(state.suggested_tests)
         for step in state.plan:
-            tests = step.get("suggested_tests", [])
-            if isinstance(tests, str):
-                tests = [tests]
-            for test_cmd_str in tests:
-                cmd_list = test_cmd_str.split()
-                result = run_safe_command(cmd_list)
+            step_tests = step.get("suggested_tests", [])
+            if isinstance(step_tests, str):
+                step_tests = [step_tests]
+            test_candidates.extend(step_tests)
 
-                rec = {
-                    "command": cmd_list,
-                    "status": result.status,
-                    "exit_code": result.exit_code,
-                    "duration_ms": result.duration_ms,
-                }
-                if result.error:
-                    rec["error"] = result.error
-                state.command_plan.append(rec)
-                state.command_results.append(rec)
+        for test_cmd_str in test_candidates:
+            if not test_cmd_str.strip():
+                continue
+            try:
+                cmd_list = shlex.split(test_cmd_str)
+            except ValueError:
+                state.command_plan.append({
+                    "command": test_cmd_str,
+                    "status": "blocked",
+                    "error": "Could not parse command string",
+                })
+                continue
 
-                session = self.session_factory()
-                try:
-                    te = ToolExecution(
-                        run_id=state.run_id,
-                        tool_name="run_safe_command",
-                        input_json={"command": cmd_list},
-                        output_json={
-                            "status": result.status,
-                            "exit_code": result.exit_code,
-                            "stdout": result.stdout[:500],
-                            "stderr": result.stderr[:500],
-                        },
-                        status=result.status,
-                        latency_ms=result.duration_ms,
-                    )
-                    session.add(te)
-                    session.commit()
-                except Exception:
-                    logger.exception("Failed to record tool execution")
-                finally:
-                    session.close()
+            if not cmd_list:
+                continue
+            result = run_safe_command(cmd_list)
+
+            rec = {
+                "command": cmd_list,
+                "status": result.status,
+                "exit_code": result.exit_code,
+                "duration_ms": result.duration_ms,
+            }
+            if result.error:
+                rec["error"] = result.error
+            state.command_plan.append(rec)
+            state.command_results.append(rec)
+
+            session = self.session_factory()
+            try:
+                te = ToolExecution(
+                    run_id=state.run_id,
+                    tool_name="run_safe_command",
+                    input_json={"command": cmd_list},
+                    output_json={
+                        "status": result.status,
+                        "exit_code": result.exit_code,
+                        "stdout": result.stdout[:500],
+                        "stderr": result.stderr[:500],
+                    },
+                    status=result.status,
+                    latency_ms=result.duration_ms,
+                )
+                session.add(te)
+                session.commit()
+            except Exception:
+                logger.exception("Failed to record tool execution")
+            finally:
+                session.close()
 
         self._record_step(
             state, "run_tests",
