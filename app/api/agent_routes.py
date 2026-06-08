@@ -157,6 +157,43 @@ async def resolve_approval(
         session.close()
 
 
+class ContinueRunResponse(BaseModel):
+    run_id: str
+    status: str
+    result: dict | None = None
+
+
+@router.post("/runs/{run_id}/continue", response_model=ContinueRunResponse)
+async def continue_agent_run(run_id: str) -> ContinueRunResponse:
+    session = get_sync_session()
+    try:
+        from app.agent.service import AgentService
+        from app.core.providers import get_chat_provider
+        from app.ingestion.embeddings import EmbeddingClient
+        from app.retrieval.hybrid import HybridRetriever
+
+        chat = get_chat_provider()
+        ec = EmbeddingClient()
+        retriever = HybridRetriever(session, ec)
+        svc = AgentService(session, chat, retriever)
+
+        data = svc.continue_after_approval(run_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if "error" in data:
+            raise HTTPException(status_code=400, detail=data["error"])
+        return ContinueRunResponse(
+            run_id=run_id, status=data["status"], result=data.get("result"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Continue run failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
 @router.post("/runs/{run_id}/cancel", response_model=CancelRunResponse)
 async def cancel_agent_run(run_id: str) -> CancelRunResponse:
     session = get_sync_session()

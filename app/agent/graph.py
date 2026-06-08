@@ -284,25 +284,50 @@ class _AgentNodeContext:
 
     def run_tests(self, state: AgentState) -> AgentState:
         t0 = time.monotonic()
-        from app.security.command_guard import CommandGuard
-        guard = CommandGuard()
+        from app.db.models import ToolExecution
+        from app.tools.executor import run_safe_command
+
         for step in state.plan:
             tests = step.get("suggested_tests", [])
             if isinstance(tests, str):
                 tests = [tests]
             for test_cmd_str in tests:
                 cmd_list = test_cmd_str.split()
-                result = guard.check(cmd_list)
-                if result.allowed:
-                    state.command_plan.append({
-                        "command": cmd_list,
-                        "status": "planned",
-                    })
-                else:
-                    state.command_plan.append({
-                        "command": cmd_list,
-                        "status": f"blocked: {result.reason}",
-                    })
+                result = run_safe_command(cmd_list)
+
+                rec = {
+                    "command": cmd_list,
+                    "status": result.status,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                }
+                if result.error:
+                    rec["error"] = result.error
+                state.command_plan.append(rec)
+                state.command_results.append(rec)
+
+                session = self.session_factory()
+                try:
+                    te = ToolExecution(
+                        run_id=state.run_id,
+                        tool_name="run_safe_command",
+                        input_json={"command": cmd_list},
+                        output_json={
+                            "status": result.status,
+                            "exit_code": result.exit_code,
+                            "stdout": result.stdout[:500],
+                            "stderr": result.stderr[:500],
+                        },
+                        status=result.status,
+                        latency_ms=result.duration_ms,
+                    )
+                    session.add(te)
+                    session.commit()
+                except Exception:
+                    logger.exception("Failed to record tool execution")
+                finally:
+                    session.close()
+
         self._record_step(
             state, "run_tests",
             output_data={"commands": state.command_plan},
