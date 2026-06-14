@@ -23,37 +23,40 @@
 
 ## 架构
 
-```
-┌──────────────────────────────────────────────────────┐
-│                   Streamlit UI                        │
-│   Q&A Tab  │  Agent Tab (run, plan, patch, approve)  │
-└──────────┬─────────────────────┬─────────────────────┘
-           │                     │
-     ┌─────▼─────┐        ┌─────▼──────────────────────┐
-     │  /api/chat │        │  /api/agent/runs           │
-     │  RAG Graph │        │  Agent Graph (LangGraph)     │
-     │            │        │                             │
-     │ classify   │        │  classify_task              │
-     │ rewrite    │        │  retrieve_context           │
-     │ retrieve   │        │  build_plan                 │
-     │ rerank     │        │  propose_patch              │
-     │ evidence   │        │  request_approval ◄─human──┐│
-     │ generate   │        │  wait_for_approval         ││
-     │ validate   │        │  apply_patch               ││
-     └─────┬──────┘        │  run_tests (executor)       ││
-           │               │  summarize                  ││
-           │               └─────────────────────────────┘│
-           │                                              │
-     ┌─────▼──────────────────────────────────────────────▼──┐
-     │              PostgreSQL + pgvector                      │
-     │  repositories │ documents │ chunks │ agent_runs         │
-     │  agent_steps  │ approval_requests │ tool_executions    │
-     └────────────────────────────────────────────────────────┘
-                        │
-           ┌────────────▼────────────┐
-           │   RepoRAG MCP Server    │
-           │   (Claude Code tools)   │
-           └─────────────────────────┘
+```mermaid
+flowchart TB
+    UI["Streamlit UI<br/>Q&A Tab | Agent Tab"]
+    ChatAPI["/api/chat"]
+    AgentAPI["/api/agent/runs"]
+    Human["Human approval"]
+    DB[("PostgreSQL + pgvector<br/>repositories | documents | chunks<br/>agent_runs | agent_steps | approval_requests | tool_executions")]
+    MCP["RepoRAG MCP Server<br/>Claude Code tools"]
+
+    UI --> ChatAPI
+    UI --> AgentAPI
+
+    subgraph RAG["RAG Graph"]
+        R1["classify"] --> R2["rewrite"] --> R3["retrieve"] --> R4["rerank"] --> R5["evidence"] --> R6["generate"] --> R7["validate"]
+    end
+
+    subgraph Agent["Agent Graph (LangGraph)"]
+        A1["classify_task"] --> A2["retrieve_context"] --> A3["build_plan"] --> A4["propose_patch"] --> A5["request_approval"]
+        A5 --> A6["wait_for_approval"]
+        A6 --> A7["apply_patch"] --> A8["run_tests (executor)"] --> A9["summarize"]
+        A6 --> A9
+        A5 -.-> Human
+        Human -.->|approve/reject| A6
+    end
+
+    ChatAPI --> R1
+    AgentAPI --> A1
+    R3 --> DB
+    R7 --> DB
+    A2 --> DB
+    A5 --> DB
+    A9 --> DB
+    MCP --> ChatAPI
+    MCP --> AgentAPI
 ```
 
 ## Agent Workflow（LangGraph）
