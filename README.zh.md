@@ -21,6 +21,14 @@
 - **MCP 服务** — 4 个工具（search_code、create_agent_run、get_agent_run、resolve_approval），可接入 Claude Code
 - **Agent 评估** — plan_success、context_hit_rate、approval_accuracy、patch_validity、latency
 
+## 运行截图
+
+### Q&A 引用回答
+![RepoRAG Q&A 界面：带引用的源码依据回答](docs/screenshots/reporag-qa.png)
+
+### Agent 审批工作流
+![RepoRAG Agent 界面：计划、patch 提案和待审批操作](docs/screenshots/reporag-agent.png)
+
 ## 架构
 
 ```mermaid
