@@ -23,6 +23,14 @@ A GitHub repository RAG assistant with an agentic code maintenance workbench —
 - **MCP server** — 4 tools (search_code, create_agent_run, get_agent_run, resolve_approval) for Claude Code integration
 - **Agent evaluation** — plan_success, context_hit_rate, approval_accuracy, patch_validity, latency
 
+## Screenshots
+
+### Q&A with Citations
+![RepoRAG Q&A UI showing a source-grounded answer with citations](docs/screenshots/reporag-qa.png)
+
+### Agent Run with Approval Gate
+![RepoRAG Agent UI showing a plan, proposed patch, and pending approval](docs/screenshots/reporag-agent.png)
+
 ## Architecture
 
 ```mermaid
