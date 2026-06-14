@@ -6,6 +6,17 @@
 
 A GitHub repository RAG assistant with an agentic code maintenance workbench — source-grounded answers, hybrid retrieval, LangGraph agent orchestration, human-in-the-loop approvals, sandboxed execution, MCP tools, and trajectory-based evaluation.
 
+## 30-second verification
+
+Run the no-database unit checks:
+
+```bash
+git clone https://github.com/ZedingZhang/reporag.git
+cd reporag
+python -m pip install -e ".[dev,mcp]"
+python -m pytest tests/test_chunkers.py tests/test_citations.py tests/test_command_guard.py tests/test_patch.py -q
+```
+
 ## Core Features
 
 ### RAG Engine (Phase 1-4)
