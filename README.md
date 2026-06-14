@@ -1,5 +1,7 @@
 # RepoRAG
 
+[![CI](https://github.com/ZedingZhang/reporag/actions/workflows/ci.yml/badge.svg)](https://github.com/ZedingZhang/reporag/actions/workflows/ci.yml)
+
 [中文文档](README.zh.md) | [English](README.md)
 
 A GitHub repository RAG assistant with an agentic code maintenance workbench — source-grounded answers, hybrid retrieval, LangGraph agent orchestration, human-in-the-loop approvals, sandboxed execution, MCP tools, and trajectory-based evaluation.
